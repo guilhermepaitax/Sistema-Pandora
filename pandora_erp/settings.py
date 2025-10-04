@@ -1,12 +1,12 @@
-# pandora_erp/settings.py
-
 """Django settings for pandora_erp project."""
 
 from __future__ import annotations
 
+# Imports padrão (ordenados para conformidade com isort / Ruff I001)
 import importlib
-import os
 import logging
+import os
+import tempfile
 import warnings
 from datetime import timedelta
 from pathlib import Path
@@ -190,9 +190,10 @@ INSTALLED_APPS = [
 ]
 
 
+_enable_whitenoise = os.environ.get("ENABLE_WHITENOISE", "False") == "True"
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
-    "whitenoise.middleware.WhiteNoiseMiddleware",
+    *(["whitenoise.middleware.WhiteNoiseMiddleware"] if _enable_whitenoise else []),
     "django.contrib.sessions.middleware.SessionMiddleware",
     "corsheaders.middleware.CorsMiddleware",
     "django.middleware.common.CommonMiddleware",
@@ -350,20 +351,16 @@ USE_TZ = True
 STATIC_URL = "/static/"
 # Simplificação para ambiente App Engine: sempre servir assets versionados do repositório
 # e usar /tmp para qualquer operação eventual de collectstatic (que evitamos).
-if not DEBUG:
-    STATIC_ROOT = Path("/tmp/staticfiles")  # somente se algo exigir
-else:
-    STATIC_ROOT = BASE_DIR / "staticfiles"
+_temp_static_dir = Path(tempfile.gettempdir()) / "pandora_staticfiles"
+STATIC_ROOT = _temp_static_dir if not DEBUG else (BASE_DIR / "staticfiles")
 
 STATICFILES_DIRS = [BASE_DIR / "static"]  # contém dist/
 
-# Desativamos WhiteNoise por enquanto (já servimos via handlers do app.yaml).
-# Se futuramente quiser reativar: remover o comentário abaixo.
-# if not DEBUG:
-#     STATICFILES_STORAGE = "whitenoise.storage.CompressedManifestStaticFilesStorage"
-
 logging.getLogger(__name__).info(
-    "[settings] DEBUG=%s STATIC_ROOT=%s STATICFILES_DIRS=%s", DEBUG, STATIC_ROOT, STATICFILES_DIRS
+    "[settings] DEBUG=%s STATIC_ROOT=%s STATICFILES_DIRS=%s",
+    DEBUG,
+    STATIC_ROOT,
+    STATICFILES_DIRS,
 )
 
 # ----------------------------------------------------------------------------
@@ -770,8 +767,6 @@ PRONTUARIOS_IMAGE_QUALITY = 85
 # Configurações de backup automático
 PRONTUARIOS_BACKUP_RETENTION_DAYS = 90
 PRONTUARIOS_AUTO_BACKUP_ENABLED = True
-
-STATIC_ROOT = BASE_DIR / "staticfiles"
 
 # ============================================================================
 # CONFIGURAÇÕES DE SEGURANÇA

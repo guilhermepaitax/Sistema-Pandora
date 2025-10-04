@@ -123,6 +123,6 @@ echo "==> Ignorando collectstatic em runtime (feito no build ou servido direto)"
 
 # echo "$(date)" > build_time.txt  # opcional: gerar carimbo de build
 
-echo "==> Iniciando Gunicorn (workers=3 timeout=120)"
-# Usamos 'python -m gunicorn' para garantir que o módulo é encontrado mesmo se PATH não incluir binários
-exec python -m gunicorn -b :$PORT pandora_erp.wsgi:application --log-file - --access-logfile - --workers 3 --timeout 120
+echo "==> Iniciando servidor ASGI (Daphne) para suportar WebSockets"
+# Utiliza daphne (channels) diretamente – single process por instância do App Engine
+exec python -m daphne -b 0.0.0.0 -p "$PORT" pandora_erp.asgi:application

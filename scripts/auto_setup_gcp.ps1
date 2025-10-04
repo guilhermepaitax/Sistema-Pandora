@@ -11,6 +11,9 @@ $DbName = [System.Environment]::GetEnvironmentVariable('PANDORA_DB_NAME'); if ([
 $DbUser = [System.Environment]::GetEnvironmentVariable('PANDORA_DB_USER'); if ([string]::IsNullOrEmpty($DbUser)) { $DbUser = 'pandora_user' }
 $DbPassword = [System.Environment]::GetEnvironmentVariable('PANDORA_DB_PASSWORD')
 $PostgresAdminPassword = [System.Environment]::GetEnvironmentVariable('PANDORA_PG_ADMIN_PASS')
+$ResetDb = $false; if ([System.Environment]::GetEnvironmentVariable('PANDORA_DB_RESET') -eq '1') { $ResetDb = $true }
+$SeedTenants = $false; if ([System.Environment]::GetEnvironmentVariable('PANDORA_SEED_TENANTS') -eq '1') { $SeedTenants = $true }
+$SeedTenantCodes = [System.Environment]::GetEnvironmentVariable('PANDORA_SEED_TENANTS_CODES'); if ([string]::IsNullOrEmpty($SeedTenantCodes)) { $SeedTenantCodes = '01,02' }
 $SkipDeploy = $false
 if ([System.Environment]::GetEnvironmentVariable('PANDORA_SKIP_DEPLOY') -eq '1') { $SkipDeploy = $true }
 
@@ -48,17 +51,21 @@ if ($PostgresAdminPassword) {
     gcloud sql users set-password postgres --instance $Instance --project $Project --password $PostgresAdminPassword | Out-Null
 }
 
-# Evitar ':' na variável para ferramentas de análise bugadas; manter só para a URL final depois
-$connParts = @($Project, $Region, $Instance)
-$connNamePlain = ($connParts -join '_')
-$connNameReal = ($Project + ':' + $Region + ':' + $Instance)
+# Nome de conexão Cloud SQL (formato projeto:região:instância) usando format para evitar parsing de ':'
+$connNameReal = "{0}:{1}:{2}" -f $Project, $Region, $Instance
 
 $dbs = gcloud sql databases list --instance $Instance --project $Project --format 'value(name)'
+if ($ResetDb -and ($dbs -split "\r?\n" | Where-Object { $_ -eq $DbName })) {
+    Log WARN "Reset solicitado: removendo database existente $DbName"
+    gcloud sql databases delete $DbName --instance $Instance --project $Project --quiet | Out-Null
+    # Atualiza lista após remoção
+    $dbs = gcloud sql databases list --instance $Instance --project $Project --format 'value(name)'
+}
 if (-not ($dbs -split "\r?\n" | Where-Object { $_ -eq $DbName })) {
-    Log INFO "Criando database $DbName"
+    Log INFO "Criando database $DbName (limpo)"
     gcloud sql databases create $DbName --instance $Instance --project $Project | Out-Null
 }
-else { Log INFO 'Database já existe' }
+else { Log INFO 'Database já existe (nenhum reset solicitado)' }
 
 $users = gcloud sql users list --instance $Instance --project $Project --format 'value(name)'
 if (-not ($users -split "\r?\n" | Where-Object { $_ -eq $DbUser })) {
@@ -72,11 +79,15 @@ $passEnc = Encode $DbPassword
 $dbUrl = 'postgres://' + $DbUser + ':' + $passEnc + '@/' + $DbName + '?host=/cloudsql/' + $connNameReal
 
 Log INFO 'Atualizando DATABASE_URL em env.yaml'
-$raw = Get-Content env.yaml -Raw
-$pattern = 'DATABASE_URL:\s*".*"'
-$replacement = 'DATABASE_URL: "' + $dbUrl + '"'
-if ($raw -match $pattern) { $raw = [regex]::Replace($raw, $pattern, $replacement) } else { $raw += "`n  $replacement`n" }
-Set-Content env.yaml $raw -Encoding UTF8
+$existing = Get-Content env.yaml
+$other = $existing | Where-Object { ($_ -notmatch '^\s*DATABASE_URL:') -and ($_ -notmatch '^\s*PANDORA_SEED_TENANTS:') -and ($_ -notmatch '^\s*PANDORA_SEED_TENANTS_CODES:') }
+$seedFlag = if ($SeedTenants) { '1' } else { '0' }
+$linesOut = @()
+foreach ($l in $other) { $linesOut += $l }
+$linesOut += ('  DATABASE_URL: "' + $dbUrl + '"')
+$linesOut += ('  PANDORA_SEED_TENANTS: "' + $seedFlag + '"')
+if ($SeedTenants) { $linesOut += ('  PANDORA_SEED_TENANTS_CODES: "' + $SeedTenantCodes + '"') }
+$linesOut | Set-Content env.yaml -Encoding UTF8
 
 if (-not $SkipDeploy) {
     Log INFO 'Deployando...'
@@ -95,4 +106,7 @@ Write-Host ('User:           ' + $DbUser)
 Write-Host ('Senha (plana):  ' + $DbPassword) -ForegroundColor Yellow
 Write-Host ('Senha (URL):    ' + $passEnc)
 Write-Host ('DATABASE_URL:   ' + $dbUrl)
+Write-Host ('Reset DB:       ' + ($ResetDb))
+Write-Host ('Seed Tenants:   ' + ($SeedTenants))
+if ($SeedTenants) { Write-Host ('Tenants Codes:  ' + $SeedTenantCodes) }
 Write-Host '==========================================='
