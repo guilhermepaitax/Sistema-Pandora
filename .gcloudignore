@@ -54,7 +54,7 @@ db_old_backup.sqlite3
 docs/_build/
 site/
 build/
-dist/
+# dist/  # (REMOVIDO) precisamos enviar assets pré-buildados em static/dist
 
 # =====================================
 # IDE / Editores
@@ -93,6 +93,9 @@ staticfiles/
 !entrypoint.sh
 !requirements.txt
 !env.yaml
+!static/dist/css/pandora-ultra-modern.css
+!static/dist/js/pandora-ultra-modern.js
+!static/dist/img/
 
 # Observação: env.yaml é incluído porque app.yaml o referencia via 'includes'.
 # ATENÇÃO: confira se env.yaml não contém segredos que não deveriam ir para este projeto.
