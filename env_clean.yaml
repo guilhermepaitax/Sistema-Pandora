@@ -26,3 +26,5 @@ env_variables:
   # Debug de migração / pular collectstatic runtime (GAE FS é read-only fora de /tmp)
   MIGRATION_VERBOSITY: "2"
   SKIP_RUNTIME_COLLECTSTATIC: "1"
+  # Forçar reset de senha do superuser neste deploy (depois voltar para 0 ou remover)
+  DJANGO_SUPERUSER_PASSWORD_FORCE: "1"

@@ -12,9 +12,10 @@ BACKOFF_FACTOR=${MIGRATION_BACKOFF_FACTOR:-1.6}
 attempt=1
 sleep_time=$INITIAL_SLEEP
 
-echo "==> Aplicando migrations (máx ${MAX_RETRIES} tentativas)"
+VERBOSITY=${MIGRATION_VERBOSITY:-1}
+echo "==> Aplicando migrations (máx ${MAX_RETRIES} tentativas, verbosity=${VERBOSITY})"
 while true; do
-	if python manage.py migrate --noinput; then
+	if python manage.py migrate --noinput --verbosity ${VERBOSITY}; then
 		echo "==> Migrações aplicadas com sucesso na tentativa ${attempt}"
 		break
 	fi
@@ -44,10 +45,84 @@ while true; do
 	fi
 done
 
-echo "==> Coletando arquivos estáticos"
-python manage.py collectstatic --noinput
+echo "==> Seed inicial (tenants) se habilitado"
+python manage.py shell <<'PY'
+import os
+from django.db import transaction
+from core.models import Tenant
+
+if os.environ.get("PANDORA_SEED_TENANTS", "0") == "1":
+	if Tenant.objects.count() == 0:
+		codes_raw = os.environ.get("PANDORA_SEED_TENANTS_CODES", "01,02")
+		codes = [c.strip() for c in codes_raw.split(',') if c.strip()]
+		if not codes:
+			codes = ["01", "02"]
+		created = []
+		with transaction.atomic():
+			for code in codes:
+				sub = f"tenant{code.lower()}"
+				name = f"Empresa {code}"
+				t = Tenant.objects.create(
+					name=name,
+					subdomain=sub,
+					codigo_interno=code,
+					status="active",
+					enabled_modules={"core": True},
+				)
+				created.append(t.codigo_interno)
+		print(f"[seed tenants] Criados tenants iniciais: {created}")
+	else:
+		print("[seed tenants] Já existem tenants; seed não executado")
+else:
+	print("[seed tenants] Variável PANDORA_SEED_TENANTS != 1; ignorando")
+PY
+
+echo "==> Garantindo superuser padrão (se configurado)"
+python manage.py shell <<'PY'
+import os
+from django.contrib.auth import get_user_model
+
+User = get_user_model()
+username = os.environ.get("DJANGO_SUPERUSER_USERNAME")
+email = os.environ.get("DJANGO_SUPERUSER_EMAIL")
+password = os.environ.get("DJANGO_SUPERUSER_PASSWORD")
+
+if username and email and password:
+	created = False
+	user, created = User.objects.get_or_create(
+		username=username,
+		defaults={
+			"email": email,
+			"is_staff": True,
+			"is_superuser": True,
+		},
+	)
+	changed = False
+	if not created:
+		# Garante flags caso alguém tenha alterado manualmente
+		if not user.is_staff or not user.is_superuser:
+			user.is_staff = True
+			user.is_superuser = True
+			changed = True
+		if user.email != email:
+			user.email = email
+			changed = True
+		if changed:
+			user.save(update_fields=["email", "is_staff", "is_superuser"])
+	# Só seta senha se ele ainda não tiver uma utilizável (evita sobrescrever alterações posteriores)
+	force_reset = os.environ.get("DJANGO_SUPERUSER_PASSWORD_FORCE") == "1"
+	if force_reset or not user.has_usable_password():
+		user.set_password(password)
+		user.save(update_fields=["password"])
+	print(f"[superuser] OK username={username} created={created} force_reset={force_reset}")
+else:
+	print("[superuser] Variáveis de ambiente incompletas; pulando criação.")
+PY
+
+echo "==> Ignorando collectstatic em runtime (feito no build ou servido direto)"
 
 # echo "$(date)" > build_time.txt  # opcional: gerar carimbo de build
 
 echo "==> Iniciando Gunicorn (workers=3 timeout=120)"
-exec gunicorn -b :$PORT pandora_erp.wsgi:application --log-file - --access-logfile - --workers 3 --timeout 120
+# Usamos 'python -m gunicorn' para garantir que o módulo é encontrado mesmo se PATH não incluir binários
+exec python -m gunicorn -b :$PORT pandora_erp.wsgi:application --log-file - --access-logfile - --workers 3 --timeout 120
