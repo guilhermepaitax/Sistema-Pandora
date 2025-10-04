@@ -20,6 +20,14 @@ def rename_paciente_to_cliente(apps, schema_editor):
     """
     conn = schema_editor.connection
     vendor = conn.vendor  # 'sqlite', 'postgresql', etc.
+
+    # Novo comportamento: em Postgres (deploy limpo) NÃO há mais colunas legado
+    # paciente_id nesta tabela (já removidas nas migrações anteriores 0009/0010).
+    # Para evitar qualquer operação que possa falhar e deixar a transação em estado
+    # abortado, simplesmente marcamos esta migração como aplicada (no-op) em Postgres.
+    if vendor == "postgresql":  # short‑circuit seguro para produção
+        return
+
     cursor = conn.cursor()
 
     try:
@@ -93,10 +101,9 @@ def rename_paciente_to_cliente(apps, schema_editor):
             pass
     except Exception:
         # Última barreira: garantir que não deixamos a transação em estado abortado.
-        try:
-            conn.rollback()
-        except Exception:
-            pass
+        # Em SQLite (único backend restante aqui) um rollback explícito pode causar
+        # "OperationalError: cannot rollback - no transaction is active" em modo
+        # autocommit. Portanto não forçamos rollback.
         return
 
 
