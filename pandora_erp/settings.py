@@ -347,7 +347,23 @@ USE_I18N = True
 USE_TZ = True
 
 STATIC_URL = "/static/"
-STATIC_ROOT = BASE_DIR / "staticfiles"
+# Permite override via variável e fallback para /tmp se filesystem raiz for read-only (GAE Standard)
+_default_static_root = BASE_DIR / "staticfiles"
+_static_root_env = os.environ.get("DJANGO_STATIC_ROOT")
+STATIC_ROOT = Path(_static_root_env) if _static_root_env else _default_static_root
+
+# Detecta se STATIC_ROOT não é gravável (ex: /workspace em GAE) e muda para /tmp/staticfiles
+try:
+    STATIC_ROOT.mkdir(parents=True, exist_ok=True)
+    _probe = STATIC_ROOT / ".write_test"
+    with _probe.open("w") as fh:  # tenta escrever
+        fh.write("ok")
+    _probe.unlink(missing_ok=True)
+except Exception:  # noqa: BLE001
+    # fallback silencioso para diretório temporário (GAE Standard é read-only fora de /tmp)
+    STATIC_ROOT = Path("/tmp/staticfiles")  # noqa: S108 - acceptable fixed temp path in container
+    STATIC_ROOT.mkdir(parents=True, exist_ok=True)
+
 STATICFILES_DIRS = [BASE_DIR / "static"]
 
 # Armazenamento otimizado de estáticos em produção (WhiteNoise)

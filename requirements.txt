@@ -79,6 +79,7 @@ yfinance>=0.2.28
 
 # Servidor web para desenvolvimento
 whitenoise>=6.5.0
+gunicorn>=21.2.0
 
 # Outras dependências já presentes (versões flexíveis para evitar conflitos)
 annotated-types
