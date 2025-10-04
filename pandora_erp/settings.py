@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import importlib
 import os
+import logging
 import warnings
 from datetime import timedelta
 from pathlib import Path
@@ -347,28 +348,23 @@ USE_I18N = True
 USE_TZ = True
 
 STATIC_URL = "/static/"
-# Permite override via variável e fallback para /tmp se filesystem raiz for read-only (GAE Standard)
-_default_static_root = BASE_DIR / "staticfiles"
-_static_root_env = os.environ.get("DJANGO_STATIC_ROOT")
-STATIC_ROOT = Path(_static_root_env) if _static_root_env else _default_static_root
-
-# Detecta se STATIC_ROOT não é gravável (ex: /workspace em GAE) e muda para /tmp/staticfiles
-try:
-    STATIC_ROOT.mkdir(parents=True, exist_ok=True)
-    _probe = STATIC_ROOT / ".write_test"
-    with _probe.open("w") as fh:  # tenta escrever
-        fh.write("ok")
-    _probe.unlink(missing_ok=True)
-except Exception:  # noqa: BLE001
-    # fallback silencioso para diretório temporário (GAE Standard é read-only fora de /tmp)
-    STATIC_ROOT = Path("/tmp/staticfiles")  # noqa: S108 - acceptable fixed temp path in container
-    STATIC_ROOT.mkdir(parents=True, exist_ok=True)
-
-STATICFILES_DIRS = [BASE_DIR / "static"]
-
-# Armazenamento otimizado de estáticos em produção (WhiteNoise)
+# Simplificação para ambiente App Engine: sempre servir assets versionados do repositório
+# e usar /tmp para qualquer operação eventual de collectstatic (que evitamos).
 if not DEBUG:
-    STATICFILES_STORAGE = "whitenoise.storage.CompressedManifestStaticFilesStorage"
+    STATIC_ROOT = Path("/tmp/staticfiles")  # somente se algo exigir
+else:
+    STATIC_ROOT = BASE_DIR / "staticfiles"
+
+STATICFILES_DIRS = [BASE_DIR / "static"]  # contém dist/
+
+# Desativamos WhiteNoise por enquanto (já servimos via handlers do app.yaml).
+# Se futuramente quiser reativar: remover o comentário abaixo.
+# if not DEBUG:
+#     STATICFILES_STORAGE = "whitenoise.storage.CompressedManifestStaticFilesStorage"
+
+logging.getLogger(__name__).info(
+    "[settings] DEBUG=%s STATIC_ROOT=%s STATICFILES_DIRS=%s", DEBUG, STATIC_ROOT, STATICFILES_DIRS
+)
 
 # ----------------------------------------------------------------------------
 # Warnings Filters (redução de ruído deprecações conhecidas)

@@ -93,6 +93,7 @@ staticfiles/
 !entrypoint.sh
 !requirements.txt
 !env.yaml
+!env_clean.yaml
 !static/dist/css/pandora-ultra-modern.css
 !static/dist/js/pandora-ultra-modern.js
 !static/dist/img/
