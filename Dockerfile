@@ -45,11 +45,11 @@ RUN chmod +x /app/entrypoint.sh && chown appuser:appuser /app/entrypoint.sh
 
 USER appuser
 
-EXPOSE 8000
+EXPOSE 8080
 ENV GUNICORN_WORKERS=3 GUNICORN_TIMEOUT=90
 CMD ["/app/entrypoint.sh"]
 
 # Target de desenvolvimento (executar com --target dev)
 FROM builder AS dev
-EXPOSE 8000
+EXPOSE 8080
 CMD ["python", "manage.py", "runserver", "0.0.0.0:8000"]

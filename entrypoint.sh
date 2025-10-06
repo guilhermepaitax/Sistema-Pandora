@@ -3,7 +3,42 @@
 # Fail fast on syntax errors, but vamos controlar falhas de migração manualmente
 set -u
 
-echo "==> Iniciando entrypoint (timestamp: $(date -u +%Y-%m-%dT%H:%M:%SZ))"
+# Cloud Run exige porta 8080; se PORT vier vazio definimos 8080
+PORT="${PORT:-8080}"
+echo "==> Iniciando entrypoint (timestamp: $(date -u +%Y-%m-%dT%H:%M:%SZ)) PORT=$PORT"
+
+# Espera básica por Postgres se DATABASE_URL apontar para postgres
+if printf '%s' "${DATABASE_URL:-}" | grep -qi 'postgres'; then
+  echo "==> Checando disponibilidade do banco antes das migrações"
+  python - <<'PY'
+import os, time, socket
+from urllib.parse import urlparse, parse_qs
+url = os.environ.get('DATABASE_URL')
+if url:
+	u = urlparse(url)
+	host = u.hostname or 'localhost'
+	port = u.port or 5432
+	q = parse_qs(u.query)
+	sock_path = q.get('host', [''])[0]
+	for attempt in range(1, 11):
+		ok = False
+		if sock_path and sock_path.startswith('/cloudsql/'):
+			ok = os.path.exists(sock_path)
+		else:
+			try:
+				with socket.create_connection((host, port), timeout=2):
+					ok = True
+			except Exception:
+				ok = False
+		if ok:
+			print(f"[db-wait] Conectividade ok (tentativa {attempt})")
+			break
+		print(f"[db-wait] Aguardando banco (tentativa {attempt})...")
+		time.sleep(min(1+attempt,6))
+	else:
+		print("[db-wait] Prosseguindo mesmo sem confirmação de conexão")
+PY
+fi
 
 MAX_RETRIES=${MIGRATION_MAX_RETRIES:-10}
 INITIAL_SLEEP=${MIGRATION_INITIAL_SLEEP_SECONDS:-3}
@@ -123,6 +158,5 @@ echo "==> Ignorando collectstatic em runtime (feito no build ou servido direto)"
 
 # echo "$(date)" > build_time.txt  # opcional: gerar carimbo de build
 
-echo "==> Iniciando servidor ASGI (Daphne) para suportar WebSockets"
-# Utiliza daphne (channels) diretamente – single process por instância do App Engine
+echo "==> Iniciando servidor ASGI (Daphne) em 0.0.0.0:$PORT"
 exec python -m daphne -b 0.0.0.0 -p "$PORT" pandora_erp.asgi:application
