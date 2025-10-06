@@ -1,9 +1,11 @@
 ########## STAGE 1: builder ##########
-FROM python:3.13-slim AS builder
+FROM python:3.13-slim-bookworm AS builder
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 POETRY_VIRTUALENVS_CREATE=false
 WORKDIR /app
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get update \
+    && apt-get upgrade -y --no-install-recommends \
+    && apt-get install -y --no-install-recommends \
     build-essential libpq-dev libffi-dev \
     libpango-1.0-0 libpangoft2-1.0-0 libpango1.0-dev \
     libjpeg62-turbo-dev zlib1g-dev libwebp-dev \
@@ -16,14 +18,17 @@ RUN pip install --upgrade pip && pip install --no-cache-dir -r requirements.txt 
 COPY . .
 
 ########## STAGE 2: runtime ##########
-FROM python:3.13-slim AS runtime
+FROM python:3.13-slim-bookworm AS runtime
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
 WORKDIR /app
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get update \
+    && apt-get upgrade -y --no-install-recommends \
+    && apt-get install -y --no-install-recommends \
     libpq-dev libpango-1.0-0 libpangoft2-1.0-0 \
     libjpeg62-turbo-dev zlib1g-dev libwebp-dev libmagic1 ghostscript ffmpeg \
-    && rm -rf /var/lib/apt/lists/*
+    && apt-get purge -y --auto-remove \
+    && rm -rf /var/lib/apt/lists/* /var/cache/apt/*
 
 # Cria o usuário NA FASE RUNTIME
 RUN useradd -m appuser
