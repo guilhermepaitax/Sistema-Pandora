@@ -49,6 +49,7 @@ from django.views.generic import TemplateView
 
 from documentos.models import WizardTenantDocumentoTemp
 from documentos.services import consolidate_wizard_temp_to_documents
+from user_management.models import StatusUsuario  # ativação de perfis de admins criados
 
 from .models import (
     Contato,
@@ -839,6 +840,19 @@ class TenantCreationWizardView(LoginRequiredMixin, UserPassesTestMixin, Template
         if _has_flag("admin_principal"):
             main_block["admin_principal"] = True
 
+        # Fallback: se nenhum admins_json válido foi enviado (JS falhou) mas campos unitários estiverem presentes,
+        # anexar ao main_block para permitir criação de um único admin. (Compatível com parse_admins_payload)
+        # Observação: só aplica se lista JSON está vazia ou '[]'.
+        try:
+            parsed = json.loads(admins_json) if admins_json else []
+        except Exception:  # noqa: BLE001
+            parsed = []
+        if (not parsed) and any(self.request.POST.get(k) for k in ("admin_email", "admin_nome", "admin_senha")):
+            for raw_key in ("admin_email", "admin_nome", "admin_senha", "admin_confirmar_senha", "admin_telefone"):
+                val = self.request.POST.get(raw_key)
+                if val:
+                    main_block[raw_key] = val
+
     def _augment_step_config_with_post(self, step_data: dict[str, Any]) -> None:
         """Acrescenta enabled_modules, subdomain e status a partir do POST (step 5)."""
         main_block = step_data.setdefault("main", {})
@@ -1376,6 +1390,18 @@ class TenantCreationWizardView(LoginRequiredMixin, UserPassesTestMixin, Template
             )
             if tenant_users_to_create:
                 TenantUser.objects.bulk_create(tenant_users_to_create, ignore_conflicts=True)
+            # Garantir que perfis de novos admins estejam ativos para permitir login imediato
+            for u in persisted_users:
+                perfil = getattr(u, "perfil_estendido", None)
+                if perfil and getattr(perfil, "status", None) == getattr(StatusUsuario, "PENDENTE", "pendente"):
+                    try:
+                        perfil.status = getattr(StatusUsuario, "ATIVO", "ativo")
+                        perfil.save(update_fields=["status", "atualizado_em"])
+                        if not u.is_active:
+                            u.is_active = True
+                            u.save(update_fields=["is_active"])
+                    except (ValueError, RuntimeError, OSError):  # pragma: no cover - best effort
+                        logger.warning("Falha ao ativar perfil de novo admin user_id=%s", u.pk)
         except IntegrityError:
             logger.exception("Erro de integridade durante o bulk create de admins ou associações.")
         except DatabaseError:
@@ -1383,6 +1409,18 @@ class TenantCreationWizardView(LoginRequiredMixin, UserPassesTestMixin, Template
         else:
             if send_welcome_email and welcome_queue:
                 self._send_welcome_queue(welcome_queue, from_email, label="novos")
+            # Também ativar perfis existentes atualizados que ainda estejam pendentes
+            for user in existing_users_map.values():
+                perfil = getattr(user, "perfil_estendido", None)
+                if perfil and getattr(perfil, "status", None) == getattr(StatusUsuario, "PENDENTE", "pendente"):
+                    try:
+                        perfil.status = getattr(StatusUsuario, "ATIVO", "ativo")
+                        perfil.save(update_fields=["status", "atualizado_em"])
+                        if not user.is_active:
+                            user.is_active = True
+                            user.save(update_fields=["is_active"])
+                    except (ValueError, RuntimeError, OSError):  # pragma: no cover
+                        logger.warning("Falha ao ativar perfil de admin existente user_id=%s", user.pk)
         finally:
             # Log de resumo (INFO) para auditoria leve
             # Usar blocos mínimos para não mascarar erros do fluxo principal
@@ -1814,7 +1852,11 @@ class TenantCreationWizardView(LoginRequiredMixin, UserPassesTestMixin, Template
         # Consolidar documentos temporários (session_key) no tenant recém salvo
         with contextlib.suppress(Exception):
             session_key = self.request.session.session_key
-            consolidate_wizard_temp_to_documents(tenant, session_key=session_key, user=self.request.user)
+            # Ajuste estrito de tipagem: serviço aceita objeto com atributo 'pk';
+            # passamos o request.user autenticado ou None sem alterar lógica.
+            req_user = getattr(self.request, "user", None)
+            user_obj = req_user if (req_user is not None and getattr(req_user, "is_authenticated", False)) else None
+            consolidate_wizard_temp_to_documents(tenant, session_key=session_key, user=cast("Any", user_obj))
         self.clear_wizard_data()
         if self.is_editing():
             return _redirect_with_cid(self.request, "core:tenant_detail", pk=tenant.pk)
