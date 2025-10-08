@@ -700,6 +700,12 @@ class Tenant(TimestampedModel):
         Formato suportado: {'modules': ['mod1','mod2', ...]} somente.
         Qualquer divergência retorna False (dados devem ser previamente normalizados).
         """
+        # Módulos essenciais sempre ativos independentemente da configuração persistida.
+        # 'core' já é tratado de forma especial em has_module; aqui garantimos 'admin'
+        # para evitar bloqueio de gerenciamento de usuários em tenants recém-criados que
+        # não tiveram o módulo explicitamente marcado no wizard.
+        if module_name in {"admin", "core"}:
+            return True
         data = self.enabled_modules
         if isinstance(data, dict):
             mods = data.get("modules")
