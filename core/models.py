@@ -632,9 +632,11 @@ class Tenant(TimestampedModel):
         # Normalização estrita opcional (mantida depois da aplicação do plano)
         if getattr(settings, "FEATURE_STRICT_ENABLED_MODULES", False):
             try:
-                self.enabled_modules = self._normalize_enabled_modules(self.enabled_modules)
+                norm = self._normalize_enabled_modules(self.enabled_modules)
+                # Persistir como lista para compatibilidade ampla com testes/legado
+                self.enabled_modules = list(norm.get("modules", []))
             except (TypeError, json.JSONDecodeError):
-                self.enabled_modules = {"modules": []}
+                self.enabled_modules = []
         super().save(*args, **kwargs)
 
     # Compat: alguns trechos legados referenciam tenant.slug; expor property.
@@ -655,14 +657,40 @@ class Tenant(TimestampedModel):
 
     @property
     def modules(self) -> dict[str, Any]:  # pragma: no cover
-        """Legacy property for enabled_modules."""
-        # Pode ser dict arbitrário legado ou formato {"modules": [...]}
-        return self.enabled_modules or {}
+        """Legacy-like view of enabled modules as a dict with "modules" list.
+
+        Suporta representações:
+        - list[str]: retorna {"modules": [...]}.
+        - dict com chave "modules": retorna como está.
+        - dict mapa de flags: converte chaves habilitadas em lista.
+        """
+        raw = self.enabled_modules
+        if isinstance(raw, list):
+            return {"modules": list(raw)}
+        if isinstance(raw, dict):
+            if "modules" in raw and isinstance(raw["modules"], (list, tuple)):
+                return {"modules": list(raw["modules"])}
+            # mapa de flags
+            enabled = [
+                k
+                for k, v in raw.items()
+                if (isinstance(v, dict) and v.get("enabled") in (True, 1, "on", "ON")) or v in (True, 1, "on", "ON")
+            ]
+            return {"modules": enabled}
+        return {"modules": []}
 
     @modules.setter
-    def modules(self, value: dict[str, Any] | None) -> None:  # pragma: no cover
-        """Legacy setter for enabled_modules."""
-        self.enabled_modules = value or {}
+    def modules(self, value: dict[str, Any] | list[str] | None) -> None:  # pragma: no cover
+        """Setter tolerante para enabled_modules."""
+        if value is None:
+            self.enabled_modules = []
+        elif isinstance(value, list):
+            self.enabled_modules = list(value)
+        elif isinstance(value, dict):
+            norm = self._normalize_enabled_modules(value)
+            self.enabled_modules = list(norm.get("modules", []))
+        else:
+            self.enabled_modules = []
 
     def has_module(self, code: str) -> bool:
         """Check if a module is enabled for the tenant."""
@@ -707,23 +735,15 @@ class Tenant(TimestampedModel):
         return {"modules": []}
 
     def is_module_enabled(self, module_name: str) -> bool:
-        """Retorna True se o módulo está habilitado (formato canonical estrito).
+        """Retorna True se o módulo está habilitado (compatível com formatos legados).
 
-        Formato suportado: {'modules': ['mod1','mod2', ...]} somente.
-        Qualquer divergência retorna False (dados devem ser previamente normalizados).
+        Usa a mesma lógica tolerante de has_module para aceitar:
+        - lista simples de módulos
+        - dict mapeando módulos para flags/objetos
+        - dict no formato {"modules": [...]}.
+        Também considera essenciais e trata 'core' como sempre disponível.
         """
-        if module_name == "core":  # core sempre acessível enquanto tenant ativo
-            return True
-        # Essenciais (ex.: 'admin') devem retornar True mesmo que dados estejam inconsistentes
-        if module_name in self.ESSENTIAL_TENANT_MODULES:
-            # Garante idempotência: se não estiver persistido, ainda assim é considerado habilitado.
-            return True
-        data = self.enabled_modules
-        if isinstance(data, dict):
-            mods = data.get("modules")
-            if isinstance(mods, list):
-                return module_name in mods
-        return False
+        return self.has_module(module_name)
 
     # ------------------------------------------------------------------
     # LÓGICA DE PLANOS/MÓDULOS
@@ -777,7 +797,8 @@ class Tenant(TimestampedModel):
         combined.update(self.ESSENTIAL_TENANT_MODULES)
         # Remover placeholders vazios e persistir no formato canônico
         final_list = sorted(m for m in combined if m)
-        self.enabled_modules = {"modules": final_list}
+        # Persistir como lista para compatibilidade com verificações (ex.: 'in enabled_modules')
+        self.enabled_modules = final_list
 
     def recompute_modules_from_plan(self, *, persist: bool = True) -> list[str]:
         """Recalcula módulos a partir do plano atual.
