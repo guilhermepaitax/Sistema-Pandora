@@ -1,169 +1,156 @@
-#!/bin/sh
+#!/bin/bash
+set -e
 
-# Fail fast on syntax errors, but vamos controlar falhas de migração manualmente
-set -u
-
-# Cloud Run exige porta 8080; se PORT vier vazio definimos 8080
 PORT="${PORT:-8080}"
-echo "==> Iniciando entrypoint (timestamp: $(date -u +%Y-%m-%dT%H:%M:%SZ)) PORT=$PORT"
+echo "[entrypoint] Iniciando Pandora ERP na porta ${PORT} (PID $$)"
 
-# Espera básica por Postgres se DATABASE_URL apontar para postgres
-if printf '%s' "${DATABASE_URL:-}" | grep -qi 'postgres'; then
-  echo "==> Checando disponibilidade do banco antes das migrações"
-  python - <<'PY'
-import os, time, socket
-from urllib.parse import urlparse, parse_qs
-url = os.environ.get('DATABASE_URL')
-if url:
-	u = urlparse(url)
-	host = u.hostname or 'localhost'
-	port = u.port or 5432
-	q = parse_qs(u.query)
-	sock_path = q.get('host', [''])[0]
-	for attempt in range(1, 11):
-		ok = False
-		if sock_path and sock_path.startswith('/cloudsql/'):
-			ok = os.path.exists(sock_path)
-		else:
-			try:
-				with socket.create_connection((host, port), timeout=2):
-					ok = True
-			except Exception:
-				ok = False
-		if ok:
-			print(f"[db-wait] Conectividade ok (tentativa {attempt})")
-			break
-		print(f"[db-wait] Aguardando banco (tentativa {attempt})...")
-		time.sleep(min(1+attempt,6))
-	else:
-		print("[db-wait] Prosseguindo mesmo sem confirmação de conexão")
+# Aguarda opcionalmente o socket do Cloud SQL aparecer quando usamos conexão via Unix Socket.
+# Ativado por padrão (defina WAIT_FOR_CLOUDSQL=0 para desabilitar).
+wait_for_cloudsql() {
+  if [ "${WAIT_FOR_CLOUDSQL:-1}" != "1" ]; then
+    return 0
+  fi
+  if [ -z "${DATABASE_URL}" ]; then
+    return 0
+  fi
+  # Extrai o valor de host= (query param) se existir na URL
+  # Formato esperado: ...?host=/cloudsql/PROJ:REGIAO:INSTANCIA
+  local socket_dir
+  socket_dir="$(echo "$DATABASE_URL" | sed -n 's/.*host=\([^&]*\).*/\1/p')"
+  # Só prossegue se contiver /cloudsql/
+  if [ -z "$socket_dir" ] || [[ "$socket_dir" != *"/cloudsql/"* ]]; then
+    return 0
+  fi
+  # Remove possíveis escapes de URL (%2F)
+  socket_dir="${socket_dir//%2F//}"
+  echo "[entrypoint] Detectado socket Cloud SQL em $socket_dir (aguardando disponibilidade)"
+  local tries=0
+  local max_tries=${CLOUDSQL_WAIT_MAX_TRIES:-20}
+  local sleep_s=${CLOUDSQL_WAIT_INTERVAL_SECONDS:-1}
+  while [ $tries -lt $max_tries ]; do
+    if [ -S "$socket_dir/.s.PGSQL.5432" ] || [ -d "$socket_dir" ]; then
+      echo "[entrypoint] Socket Cloud SQL disponível (tries=$tries)"
+      return 0
+    fi
+    tries=$((tries+1))
+    sleep $sleep_s
+  done
+  echo "[entrypoint] Aviso: socket Cloud SQL não detectado após $((max_tries*sleep_s))s; prosseguindo assim mesmo" >&2
+  return 0
+}
+
+wait_for_cloudsql
+
+run_migrations() {
+  local max_retries=${MIGRATION_MAX_RETRIES:-1}
+  local sleep_seconds=${MIGRATION_INITIAL_SLEEP_SECONDS:-3}
+  local backoff=${MIGRATION_BACKOFF_FACTOR:-1.6}
+  local attempt=1
+  echo "[entrypoint] Iniciando migrações (max_retries=$max_retries sleep=$sleep_seconds backoff=$backoff)"
+  while [ $attempt -le $max_retries ]; do
+    echo "[entrypoint] migrate tentativa $attempt..."
+    if python manage.py migrate --noinput; then
+      echo "[entrypoint] Migrações concluídas"
+      return 0
+    fi
+    if [ $attempt -eq $max_retries ]; then
+      echo "[entrypoint] Migrações falharam após $attempt tentativas" >&2
+      return 1
+    fi
+    echo "[entrypoint] Falha na tentativa $attempt, aguardando $sleep_seconds segundos"
+    sleep $sleep_seconds
+    # limitar crescimento exagerado
+    sleep_seconds=$(python - <<PY
+import math
+v=$sleep_seconds*$backoff
+print(min(int(v)+1,45))
 PY
+)
+    attempt=$((attempt+1))
+  done
+}
+
+if [ "${SKIP_STARTUP_MIGRATIONS}" != "1" ]; then
+  run_migrations || exit 1
+else
+  echo "[entrypoint] SKIP_STARTUP_MIGRATIONS=1 -> pulando migrate"
 fi
 
-MAX_RETRIES=${MIGRATION_MAX_RETRIES:-10}
-INITIAL_SLEEP=${MIGRATION_INITIAL_SLEEP_SECONDS:-3}
-BACKOFF_FACTOR=${MIGRATION_BACKOFF_FACTOR:-1.6}
+# collectstatic removido do runtime (feito em build). RUN_COLLECTSTATIC descontinuado.
 
-attempt=1
-sleep_time=$INITIAL_SLEEP
-
-VERBOSITY=${MIGRATION_VERBOSITY:-1}
-if [ "${SKIP_STARTUP_MIGRATIONS:-0}" = "1" ]; then
-    echo "==> SKIP_STARTUP_MIGRATIONS=1 - pulando aplicação de migrações no startup"
-else
-    echo "==> Aplicando migrations (máx ${MAX_RETRIES} tentativas, verbosity=${VERBOSITY})"
-    while true; do
-    	if python manage.py migrate --noinput --verbosity ${VERBOSITY}; then
-    		echo "==> Migrações aplicadas com sucesso na tentativa ${attempt}"
-    		break
-    	fi
-
-    	if [ "$attempt" -ge "$MAX_RETRIES" ]; then
-    		echo "[ERRO] Falha ao aplicar migrações após ${attempt} tentativas. Abortando." >&2
-    		exit 1
-    	fi
-
-    	attempt=$((attempt + 1))
-    	printf "==> Migração falhou. Nova tentativa (%d/%d) em %.1f s...\n" "$attempt" "$MAX_RETRIES" "$sleep_time"
-    	if command -v awk >/dev/null 2>&1; then
-    		awk -v t="$sleep_time" 'BEGIN { system("sleep " t) }'
-    	else
-    		sleep $(printf '%.*f' 0 "$sleep_time")
-    	fi
-    	if command -v awk >/dev/null 2>&1; then
-    		sleep_time=$(awk -v t="$sleep_time" -v f="$BACKOFF_FACTOR" 'BEGIN { v=t*f; if (v>45) v=45; printf "%.2f", v }')
-    	else
-    		sleep_time=$((sleep_time * 2))
-    		[ "$sleep_time" -gt 45 ] && sleep_time=45
-    	fi
-    done
-fi
-
-if [ "${SKIP_STARTUP_MIGRATIONS:-0}" = "1" ]; then
-  echo "==> SKIP_STARTUP_MIGRATIONS=1 - pulando seed de tenants e criação de superuser (tabelas podem não existir)"
-else
-  echo "==> Seed inicial (tenants) se habilitado"
-  python manage.py shell <<'PY'
-import os
-from django.db import transaction
-from core.models import Tenant
-
-try:
-	if os.environ.get("PANDORA_SEED_TENANTS", "0") == "1":
-		if Tenant.objects.count() == 0:
-			codes_raw = os.environ.get("PANDORA_SEED_TENANTS_CODES", "01,02")
-			codes = [c.strip() for c in codes_raw.split(',') if c.strip()]
-			if not codes:
-				codes = ["01", "02"]
-			created = []
-			with transaction.atomic():
-				for code in codes:
-					sub = f"tenant{code.lower()}"
-					name = f"Empresa {code}"
-					t = Tenant.objects.create(
-						name=name,
-						subdomain=sub,
-						codigo_interno=code,
-						status="active",
-						enabled_modules={"core": True},
-					)
-					created.append(t.codigo_interno)
-			print(f"[seed tenants] Criados tenants iniciais: {created}")
-		else:
-			print("[seed tenants] Já existem tenants; seed não executado")
-	else:
-		print("[seed tenants] Variável PANDORA_SEED_TENANTS != 1; ignorando")
-except Exception as e:  # pragma: no cover
-	print(f"[seed tenants] ERRO não crítico: {e}")
-PY
-
-  echo "==> Garantindo superuser padrão (se configurado)"
-  python manage.py shell <<'PY'
-import os
+# Criar superuser se variáveis presentes
+python manage.py shell <<'PYCODE' || true
+"""Bootstrap de superusuário idempotente.
+Regras:
+1. Se já existe qualquer superuser -> não faz nada.
+2. Se não existe superuser e variáveis DJANGO_SUPERUSER_* existem -> cria usando elas.
+3. Se não existe superuser e variáveis não existem -> cria 'admin' com senha aleatória e exibe no log.
+"""
 from django.contrib.auth import get_user_model
-
+from django.db import OperationalError
+import os, secrets, string
+User = get_user_model()
 try:
-	User = get_user_model()
-	username = os.environ.get("DJANGO_SUPERUSER_USERNAME")
-	email = os.environ.get("DJANGO_SUPERUSER_EMAIL")
-	password = os.environ.get("DJANGO_SUPERUSER_PASSWORD")
+  force_reset = os.environ.get('DJANGO_SUPERUSER_FORCE_RESET') == '1'
+  target_username = os.environ.get('DJANGO_SUPERUSER_USERNAME')
+  target_password = os.environ.get('DJANGO_SUPERUSER_PASSWORD')
+  target_email = os.environ.get('DJANGO_SUPERUSER_EMAIL', 'admin@example.com')
 
-	if username and email and password:
-		created = False
-		user, created = User.objects.get_or_create(
-			username=username,
-			defaults={
-				"email": email,
-				"is_staff": True,
-				"is_superuser": True,
-			},
-		)
-		changed = False
-		if not created:
-			if not user.is_staff or not user.is_superuser:
-				user.is_staff = True
-				user.is_superuser = True
-				changed = True
-			if user.email != email:
-				user.email = email
-				changed = True
-			if changed:
-				user.save(update_fields=["email", "is_staff", "is_superuser"])
-		force_reset = os.environ.get("DJANGO_SUPERUSER_PASSWORD_FORCE") == "1"
-		if force_reset or not user.has_usable_password():
-			user.set_password(password)
-			user.save(update_fields=["password"])
-		print(f"[superuser] OK username={username} created={created} force_reset={force_reset}")
-	else:
-		print("[superuser] Variáveis de ambiente incompletas; pulando criação.")
-except Exception as e:  # pragma: no cover
-	print(f"[superuser] ERRO não crítico: {e}")
-PY
+  any_superuser = User.objects.filter(is_superuser=True).exists()
+  if not any_superuser:
+    # Cenário inicial: criar superuser (usa variáveis se fornecidas, senão gera)
+    u = target_username or 'admin'
+    p = target_password
+    if not p:
+      alphabet = string.ascii_letters + string.digits
+      p = ''.join(secrets.choice(alphabet) for _ in range(16))
+      print('[entrypoint] SUPERUSER AUTO-GERADO (anote a senha abaixo)')
+      print(f"[entrypoint] username={u} password={p}")
+    obj, created = User.objects.get_or_create(
+      username=u,
+      defaults={'email': target_email, 'is_staff': True, 'is_superuser': True},
+    )
+    if created:
+      obj.set_password(p)
+      obj.is_superuser = True
+      obj.is_staff = True
+      obj.save()
+      print(f'[entrypoint] superuser criado username={u}')
+    else:
+      print(f'[entrypoint] superuser já existia username={u} (race?) -> senha preservada')
+  else:
+    # Já existe superuser. Apenas reset se explicitamente solicitado e credenciais presentes.
+    if force_reset and target_username and target_password:
+      try:
+        su = User.objects.get(username=target_username)
+      except User.DoesNotExist:
+        # Cria novo superuser adicional se não existe com esse username
+        su = User(username=target_username, email=target_email, is_staff=True, is_superuser=True)
+      su.set_password(target_password)
+      su.is_superuser = True
+      su.is_staff = True
+      su.save()
+      print(f'[entrypoint] superuser reset/aplicado username={target_username}')
+    else:
+      print('[entrypoint] superuser já existente -> skip criação (nenhum reset solicitado)')
+except OperationalError as exc:
+  print(f'[entrypoint] ERRO ao checar/criar superuser: {exc!r}')
+except Exception as exc:  # noqa: BLE001
+  print(f'[entrypoint] Erro inesperado superuser: {exc!r}')
+PYCODE
+
+if [ "${USE_GUNICORN}" = "1" ]; then
+  : "${GUNICORN_WORKERS:=3}"
+  : "${GUNICORN_TIMEOUT:=90}"
+  echo "[entrypoint] Iniciando Gunicorn (workers=${GUNICORN_WORKERS} timeout=${GUNICORN_TIMEOUT})"
+  exec gunicorn pandora_erp.asgi:application \
+    -k uvicorn.workers.UvicornWorker \
+    -b 0.0.0.0:"${PORT}" \
+    --workers "${GUNICORN_WORKERS}" \
+    --timeout "${GUNICORN_TIMEOUT}" \
+    --access-logfile - \
+    --error-logfile -
+else
+  echo "[entrypoint] Iniciando Daphne ASGI..."
+  exec python -m daphne -b 0.0.0.0 -p "${PORT}" pandora_erp.asgi:application
 fi
-
-echo "==> Ignorando collectstatic em runtime (feito no build ou servido direto)"
-
-# echo "$(date)" > build_time.txt  # opcional: gerar carimbo de build
-
-echo "==> Iniciando servidor ASGI (Daphne) em 0.0.0.0:$PORT"
-exec python -m daphne -b 0.0.0.0 -p "$PORT" pandora_erp.asgi:application

@@ -255,27 +255,21 @@ class TenantCreationWizardView(LoginRequiredMixin, UserPassesTestMixin, Template
             cid = getattr(request, "_wizard_cid", None) or _uuid.uuid4().hex[:12]
             setattr(request, "_wizard_cid", cid)  # noqa: B010
 
-        # Salvaguarda: se estamos acessando a rota de criação (sem pk na URL)
-        # mas ainda existe um pk de edição na sessão, significa que o finish
-        # anterior não limpou corretamente OU o usuário abriu uma nova aba.
-        # Para evitar que o formulário de criação venha pré-preenchido com
-        # dados do tenant anterior, forçamos a limpeza seletiva aqui.
-        if "pk" not in kwargs:
+        # Salvaguarda ajustada: só limpar sessão ao acessar a rota de criação
+        # de forma explícita (GET com ?new=1). Isso evita apagar o contexto de
+        # edição quando o frontend (ou testes) utiliza a rota de criação como
+        # alias de POSTs durante um fluxo de EDIÇÃO.
+        if "pk" not in kwargs and request.method == "GET" and request.GET.get("new") == "1":
             sess = request.session
-            if sess.get("tenant_wizard_editing_pk"):
-                # Não apagar documentos temporários inadvertidamente se o usuário
-                # estiver no meio de outro fluxo; porém, neste caso específico
-                # o objetivo é iniciar um novo wizard limpo.
-                for key in [
-                    "tenant_wizard_editing_pk",
-                    "tenant_wizard_step",
-                    "tenant_wizard_data",
-                ]:
-                    sess.pop(key, None)
-                with contextlib.suppress(Exception):
-                    # Limpa também estruturas temporárias se existirem.
-                    self._clear_session_temp_documents()
-                sess.modified = True
+            for key in [
+                "tenant_wizard_editing_pk",
+                "tenant_wizard_step",
+                "tenant_wizard_data",
+            ]:
+                sess.pop(key, None)
+            with contextlib.suppress(Exception):
+                self._clear_session_temp_documents()
+            sess.modified = True
         response = super().dispatch(request, *args, **kwargs)
         with contextlib.suppress(Exception):
             if cid and "X-Wizard-Correlation-Id" not in getattr(response, "headers", {}):
@@ -523,13 +517,15 @@ class TenantCreationWizardView(LoginRequiredMixin, UserPassesTestMixin, Template
             tipo=map_tipo(item.get("tipo")),
             logradouro=logradouro,
             numero=numero,
-            complemento=(item.get("complemento") or "").strip() or None,
+            # CharField(blank=True, default=""): nunca persistir None
+            complemento=(item.get("complemento") or "").strip(),
             bairro=bairro,
             cidade=cidade,
             uf=uf,
             cep=cep,
             pais=pais,
-            ponto_referencia=(item.get("ponto_referencia") or "").strip() or None,
+            # CharField(blank=True, default=""): nunca persistir None
+            ponto_referencia=(item.get("ponto_referencia") or "").strip(),
             principal=bool(item.get("principal")),
         )
         return True
@@ -1159,11 +1155,11 @@ class TenantCreationWizardView(LoginRequiredMixin, UserPassesTestMixin, Template
             if isinstance(item, dict) and any(item.get(k) for k in ["nome", "email", "telefone"]):
                 Contato.objects.create(
                     tenant=tenant,
-                    nome=(item.get("nome") or "").strip()[:100] or None,
-                    email=(item.get("email") or "").strip()[:254] or None,
-                    telefone=(item.get("telefone") or "").strip()[:20] or None,
-                    cargo=(item.get("cargo") or "").strip()[:100] or None,
-                    observacao=(item.get("observacao") or "").strip()[:500] or None,
+                    nome=(item.get("nome") or "").strip()[:100],
+                    email=(item.get("email") or "").strip()[:254],
+                    telefone=(item.get("telefone") or "").strip()[:20],
+                    cargo=(item.get("cargo") or "").strip()[:100],
+                    observacao=(item.get("observacao") or "").strip()[:500],
                 )
 
     def _process_complete_contacts_data(
@@ -1782,6 +1778,11 @@ class TenantCreationWizardView(LoginRequiredMixin, UserPassesTestMixin, Template
             if not editing_pk:
                 with contextlib.suppress(Exception):
                     editing_pk = self.get_wizard_data().get("_editing_pk")
+            if not editing_pk:
+                # Fallback final: tentar extrair do kwargs (rota /<pk>/edit/)
+                with contextlib.suppress(Exception):
+                    raw_pk = self.kwargs.get("pk")
+                    editing_pk = int(raw_pk) if raw_pk is not None else None
             if editing_pk:
                 return _redirect_with_cid(self.request, "core:tenant_update", pk=editing_pk)
             # Sem pk de edição em sessão, tratar como criação, redirecionando para o início
@@ -1902,6 +1903,10 @@ class TenantCreationWizardView(LoginRequiredMixin, UserPassesTestMixin, Template
         if not editing_pk:
             with contextlib.suppress(Exception):
                 editing_pk = self.get_wizard_data().get("_editing_pk")
+        if not editing_pk:
+            with contextlib.suppress(Exception):
+                raw_pk = self.kwargs.get("pk")
+                editing_pk = int(raw_pk) if raw_pk is not None else None
         if editing_pk:
             return _redirect_with_cid(self.request, "core:tenant_update", pk=editing_pk)
         # Caso contrário, retornar ao caminho atual (fluxo de criação)

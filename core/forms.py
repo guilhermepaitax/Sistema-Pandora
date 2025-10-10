@@ -20,6 +20,7 @@ from django.forms import DateInput
 from django.utils.translation import gettext_lazy as _
 
 from cadastros_gerais.models import ItemAuxiliar  # novo: para filtrar tipos de documentos aplicáveis
+from core.module_registry import get_all_module_choices  # central registry
 
 # Modelos importados
 from .models import (  # novo: modelos de versionamento
@@ -248,291 +249,9 @@ class TenantUserForm(BasePandoraForm):
 
 
 class ModuleConfigurationForm(forms.Form):
-    """Habilitação e visual de módulos por Tenant."""
+    """Habilitação e visual de módulos por Tenant (usa module_registry)."""
 
-    # Configuração visual dos módulos (ícones e cores)
-    MODULE_ICONS_AND_COLORS: ClassVar[dict[str, dict[str, str]]] = {
-        # Módulos Básicos de Gestão
-        "clientes": {"icon": "fas fa-users", "color": "text-primary", "category": "Gestão Básica"},
-        "fornecedores": {"icon": "fas fa-truck", "color": "text-info", "category": "Gestão Básica"},
-        "produtos": {"icon": "fas fa-box", "color": "text-success", "category": "Gestão Básica"},
-        "servicos": {"icon": "fas fa-tools", "color": "text-warning", "category": "Gestão Básica"},
-        "funcionarios": {"icon": "fas fa-id-badge", "color": "text-secondary", "category": "Gestão Básica"},
-        "cadastros_gerais": {"icon": "fas fa-database", "color": "text-dark", "category": "Gestão Básica"},
-        # Módulos de Obras e Projetos
-        "obras": {"icon": "fas fa-hard-hat", "color": "text-primary", "category": "Obras e Projetos"},
-        "orcamentos": {"icon": "fas fa-calculator", "color": "text-info", "category": "Obras e Projetos"},
-        "quantificacao_obras": {
-            "icon": "fas fa-ruler-combined",
-            "color": "text-success",
-            "category": "Obras e Projetos",
-        },
-        "apropriacao": {"icon": "fas fa-chart-pie", "color": "text-warning", "category": "Obras e Projetos"},
-        "mao_obra": {"icon": "fas fa-users-cog", "color": "text-secondary", "category": "Obras e Projetos"},
-        # Módulos Financeiros e Operacionais
-        "compras": {"icon": "fas fa-shopping-cart", "color": "text-success", "category": "Financeiro e Operacional"},
-        "financeiro": {"icon": "fas fa-dollar-sign", "color": "text-warning", "category": "Financeiro e Operacional"},
-        "estoque": {"icon": "fas fa-warehouse", "color": "text-secondary", "category": "Financeiro e Operacional"},
-        "aprovacoes": {"icon": "fas fa-check-circle", "color": "text-success", "category": "Financeiro e Operacional"},
-        # Módulos de Saúde e Clínicas
-        "prontuarios": {"icon": "fas fa-file-medical", "color": "text-danger", "category": "Saúde e Clínicas"},
-        "sst": {"icon": "fas fa-shield-alt", "color": "text-danger", "category": "Saúde e Clínicas"},
-        # Módulos de Comunicação e Organização
-        "agenda": {"icon": "fas fa-calendar", "color": "text-success", "category": "Comunicação e Organização"},
-        "chat": {"icon": "fas fa-comments", "color": "text-warning", "category": "Comunicação e Organização"},
-        "notifications": {"icon": "fas fa-bell", "color": "text-info", "category": "Comunicação e Organização"},
-        # Módulos de Formulários e Documentação
-        "formularios": {"icon": "fas fa-file-alt", "color": "text-secondary", "category": "Formulários e Documentação"},
-        "formularios_dinamicos": {
-            "icon": "fas fa-magic",
-            "color": "text-purple",
-            "category": "Formulários e Documentação",
-        },
-        # Módulos de Capacitação e Gestão
-        "treinamento": {"icon": "fas fa-graduation-cap", "color": "text-info", "category": "Capacitação e Gestão"},
-        "user_management": {"icon": "fas fa-users-cog", "color": "text-dark", "category": "Capacitação e Gestão"},
-        # Módulos de Análise e Inteligência
-        "relatorios": {"icon": "fas fa-chart-bar", "color": "text-primary", "category": "Análise e Inteligência"},
-        "bi": {"icon": "fas fa-chart-line", "color": "text-info", "category": "Análise e Inteligência"},
-        "ai_auditor": {"icon": "fas fa-robot", "color": "text-success", "category": "Análise e Inteligência"},
-        # Módulos Administrativos
-        "admin": {"icon": "fas fa-tachometer-alt", "color": "text-dark", "category": "Administrativo"},
-    }
-
-    # Categorias organizadas para melhor apresentação
-    MODULE_CATEGORIES: ClassVar[dict[str, dict[str, str]]] = {
-        "Gestão Básica": {
-            "icon": "fas fa-building",
-            "color": "text-primary",
-            "description": "Módulos essenciais para o dia a dia da empresa",
-        },
-        "Obras e Projetos": {
-            "icon": "fas fa-hard-hat",
-            "color": "text-warning",
-            "description": "Módulos especializados em construção e projetos",
-        },
-        "Financeiro e Operacional": {
-            "icon": "fas fa-dollar-sign",
-            "color": "text-success",
-            "description": "Controle financeiro e operações da empresa",
-        },
-        "Saúde e Clínicas": {
-            "icon": "fas fa-heartbeat",
-            "color": "text-danger",
-            "description": "Módulos para clínicas e profissionais da saúde",
-        },
-        "Comunicação e Organização": {
-            "icon": "fas fa-comments",
-            "color": "text-info",
-            "description": "Ferramentas de comunicação e organização interna",
-        },
-        "Formulários e Documentação": {
-            "icon": "fas fa-file-alt",
-            "color": "text-secondary",
-            "description": "Criação e gestão de formulários e documentos",
-        },
-        "Capacitação e Gestão": {
-            "icon": "fas fa-graduation-cap",
-            "color": "text-primary",
-            "description": "Treinamentos e gestão de pessoas",
-        },
-        "Análise e Inteligência": {
-            "icon": "fas fa-chart-line",
-            "color": "text-info",
-            "description": "Relatórios, BI e inteligência artificial",
-        },
-        "Administrativo": {
-            "icon": "fas fa-tachometer-alt",
-            "color": "text-dark",
-            "description": "Ferramentas administrativas e configurações",
-        },
-    }
-
-    # Definição completa dos módulos disponíveis
-    AVAILABLE_MODULES: ClassVar[dict[str, dict[str, Any]]] = {
-        # Módulos Básicos de Gestão
-        "clientes": {
-            "name": "Clientes",
-            "description": "Gestão completa de clientes, contratos e relacionamentos",
-            "category": "Gestão Básica",
-            "premium": False,
-        },
-        "fornecedores": {
-            "name": "Fornecedores",
-            "description": "Cadastro e gestão de fornecedores e parcerias",
-            "category": "Gestão Básica",
-            "premium": False,
-        },
-        "produtos": {
-            "name": "Produtos",
-            "description": "Catálogo de produtos, preços e especificações",
-            "category": "Gestão Básica",
-            "premium": False,
-        },
-        "servicos": {
-            "name": "Serviços",
-            "description": "Gestão de serviços oferecidos pela empresa",
-            "category": "Gestão Básica",
-            "premium": False,
-        },
-        "funcionarios": {
-            "name": "Funcionários",
-            "description": "Gestão de recursos humanos e colaboradores",
-            "category": "Gestão Básica",
-            "premium": False,
-        },
-        "cadastros_gerais": {
-            "name": "Cadastros Gerais",
-            "description": "Cadastros auxiliares e configurações gerais",
-            "category": "Gestão Básica",
-            "premium": False,
-        },
-        # Módulos de Obras e Projetos
-        "obras": {
-            "name": "Obras",
-            "description": "Gestão completa de obras e projetos de construção",
-            "category": "Obras e Projetos",
-            "premium": False,
-        },
-        "orcamentos": {
-            "name": "Orçamentos",
-            "description": "Criação e gestão de orçamentos detalhados",
-            "category": "Obras e Projetos",
-            "premium": False,
-        },
-        "quantificacao_obras": {
-            "name": "Quantificação de Obras",
-            "description": "Cálculos e quantificações para projetos",
-            "category": "Obras e Projetos",
-            "premium": True,
-        },
-        "apropriacao": {
-            "name": "Apropriação",
-            "description": "Apropriação de custos e controle de obras",
-            "category": "Obras e Projetos",
-            "premium": True,
-        },
-        "mao_obra": {
-            "name": "Mão de Obra",
-            "description": "Gestão de equipes e mão de obra especializada",
-            "category": "Obras e Projetos",
-            "premium": False,
-        },
-        # Módulos Financeiros e Operacionais
-        "compras": {
-            "name": "Compras",
-            "description": "Sistema de compras, cotações e aquisições",
-            "category": "Financeiro e Operacional",
-            "premium": False,
-        },
-        "financeiro": {
-            "name": "Financeiro",
-            "description": "Controle financeiro completo da empresa",
-            "category": "Financeiro e Operacional",
-            "premium": False,
-        },
-        "estoque": {
-            "name": "Estoque",
-            "description": "Controle de estoque e movimentações",
-            "category": "Financeiro e Operacional",
-            "premium": False,
-        },
-        "aprovacoes": {
-            "name": "Aprovações",
-            "description": "Sistema de workflow e aprovações",
-            "category": "Financeiro e Operacional",
-            "premium": True,
-        },
-        # Módulos de Saúde e Clínicas
-        "prontuarios": {
-            "name": "Prontuários",
-            "description": "Prontuários médicos eletrônicos",
-            "category": "Saúde e Clínicas",
-            "premium": True,
-        },
-        "sst": {
-            "name": "SST",
-            "description": "Segurança e Saúde do Trabalho",
-            "category": "Saúde e Clínicas",
-            "premium": True,
-        },
-        # Módulos de Comunicação e Organização
-        "agenda": {
-            "name": "Agenda",
-            "description": "Agenda compartilhada e agendamentos",
-            "category": "Comunicação e Organização",
-            "premium": False,
-        },
-        "chat": {
-            "name": "Chat",
-            "description": "Chat interno em tempo real",
-            "category": "Comunicação e Organização",
-            "premium": True,
-        },
-        "notifications": {
-            "name": "Notificações",
-            "description": "Sistema de notificações e alertas",
-            "category": "Comunicação e Organização",
-            "premium": False,
-        },
-        # Módulos de Formulários e Documentação
-        "formularios": {
-            "name": "Formulários",
-            "description": "Formulários customizados para a empresa",
-            "category": "Formulários e Documentação",
-            "premium": False,
-        },
-        "formularios_dinamicos": {
-            "name": "Formulários Dinâmicos",
-            "description": "Criador avançado de formulários dinâmicos",
-            "category": "Formulários e Documentação",
-            "premium": True,
-        },
-        # Módulos de Capacitação e Gestão
-        "treinamento": {
-            "name": "Treinamentos",
-            "description": "Sistema de treinamentos e capacitação",
-            "category": "Capacitação e Gestão",
-            "premium": True,
-        },
-        "user_management": {
-            "name": "Gestão de Usuários",
-            "description": "Gestão avançada de usuários e permissões",
-            "category": "Capacitação e Gestão",
-            "premium": False,
-        },
-        # Módulos de Análise e Inteligência
-        "relatorios": {
-            "name": "Relatórios",
-            "description": "Sistema completo de relatórios",
-            "category": "Análise e Inteligência",
-            "premium": False,
-        },
-        "bi": {
-            "name": "Business Intelligence",
-            "description": "Dashboards e análises inteligentes",
-            "category": "Análise e Inteligência",
-            "premium": True,
-        },
-        "ai_auditor": {
-            "name": "Auditor IA",
-            "description": "Auditoria automatizada com inteligência artificial",
-            "category": "Análise e Inteligência",
-            "premium": True,
-        },
-        # Módulos Administrativos
-        "admin": {
-            "name": "Dashboard Admin",
-            "description": "Painel administrativo avançado",
-            "category": "Administrativo",
-            "premium": False,
-        },
-    }
-
-    # Lista de tuplas para o campo de formulário
-    AVAILABLE_MODULES_CHOICES: ClassVar[list[tuple[str, str]]] = [
-        (key, str(info.get("name", key))) for key, info in AVAILABLE_MODULES.items()
-    ]
+    AVAILABLE_MODULES_CHOICES: ClassVar[list[tuple[str, str]]] = get_all_module_choices()
 
     enabled_modules = forms.MultipleChoiceField(
         choices=sorted(AVAILABLE_MODULES_CHOICES, key=lambda x: (x[1] or "")),
@@ -542,31 +261,63 @@ class ModuleConfigurationForm(forms.Form):
     )
 
     def __init__(self, *args, **kwargs) -> None:  # noqa: ANN002, ANN003
-        """Preenche módulos habilitados a partir do tenant (quando houver)."""
+        """Configura initial e help_text conforme plano/tenant."""
         self.tenant = kwargs.pop("tenant", None)
         super().__init__(*args, **kwargs)
-        if self.tenant and getattr(self.tenant, "enabled_modules", None):
-            try:
-                enabled_modules_data = self.tenant.enabled_modules
-                if isinstance(enabled_modules_data, str):
-                    initial_modules = json.loads(enabled_modules_data)
-                elif isinstance(enabled_modules_data, dict):
-                    initial_modules = enabled_modules_data.get("modules", [])
-                else:
-                    initial_modules = []
-                self.fields["enabled_modules"].initial = initial_modules
-            except (json.JSONDecodeError, TypeError):
-                pass
+        plan = self._resolve_plan()
+        existing = set(self._extract_existing_modules())
+        defaults = self._plan_defaults(plan)
+        essentials = set(getattr(Tenant, "ESSENTIAL_TENANT_MODULES", []))
+        # Para planos não CUSTOM: union de existentes + defaults + essenciais
+        initial = sorted(existing | defaults | essentials) if plan != "CUSTOM" else sorted(existing | essentials)
+        self.fields["enabled_modules"].initial = initial
+        self._apply_help_text(plan, defaults)
+
+    # ---- helpers ----
+    def _resolve_plan(self) -> str:
+        return getattr(self.tenant, "plano_assinatura", "BASIC") if self.tenant else "BASIC"
+
+    def _extract_existing_modules(self) -> list[str]:
+        data = getattr(self.tenant, "enabled_modules", None)
+        if not data:
+            return []
+        try:
+            if isinstance(data, str):
+                return json.loads(data)
+            if isinstance(data, dict):
+                return data.get("modules", []) or []
+        except (json.JSONDecodeError, TypeError):  # pragma: no cover
+            return []
+        return []
+
+    def _plan_defaults(self, plan: str) -> set[str]:
+        mapping = getattr(Tenant, "PLAN_DEFAULT_MODULES", {})
+        return set(mapping.get(plan, []))
+
+    def _apply_help_text(self, plan: str, defaults: set[str]) -> None:
+        field = self.fields.get("enabled_modules")
+        if not field:
+            return
+        if plan != "CUSTOM" and defaults:
+            field.help_text = (field.help_text or "") + f" Módulos do plano {plan} são fixos e aparecem marcados."
+        elif plan == "CUSTOM":
+            field.help_text = (
+                field.help_text or ""
+            ) + " Plano personalizado: selecione livremente os módulos necessários."
 
     def save(self) -> None:
         """Salva a lista de módulos habilitados no campo JSON do tenant."""
         if not self.tenant:
             msg = _("O tenant não foi fornecido para o formulário.")
             raise TypeError(msg)
-
-        selected_modules = self.cleaned_data.get("enabled_modules", [])
-        self.tenant.enabled_modules = json.dumps(selected_modules)
-        self.tenant.save(update_fields=["enabled_modules"])
+        # Normalizar seleção + salvamento em formato canônico {'modules': [...]}.
+        selected_modules = list(dict.fromkeys(self.cleaned_data.get("enabled_modules", [])))
+        # Garantir essenciais presentes sempre
+        essentials = set(getattr(Tenant, "ESSENTIAL_TENANT_MODULES", []))
+        selected_modules = sorted(set(selected_modules) | essentials)
+        self.tenant.enabled_modules = {"modules": selected_modules}
+        # save() do modelo já aplicará defaults de plano se necessário
+        self.tenant.save(update_fields=["enabled_modules"])  # save parcial mantém demais campos
 
 
 class EmpresaDocumentoVersaoCreateForm(forms.Form):

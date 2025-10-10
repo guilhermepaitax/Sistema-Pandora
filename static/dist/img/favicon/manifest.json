@@ -1,0 +1,24 @@
+{
+    "name": "Pandora ERP",
+    "short_name": "Pandora",
+    "icons": [
+        {
+            "src": "/static/dist/img/favicon/favicon-16x16.png",
+            "sizes": "16x16",
+            "type": "image/png"
+        },
+        {
+            "src": "/static/dist/img/favicon/favicon-32x32.png",
+            "sizes": "32x32",
+            "type": "image/png"
+        },
+        {
+            "src": "/static/dist/img/favicon/apple-touch-icon.png",
+            "sizes": "180x180",
+            "type": "image/png"
+        }
+    ],
+    "theme_color": "#3b82f6",
+    "background_color": "#ffffff",
+    "display": "standalone"
+}

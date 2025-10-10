@@ -399,6 +399,53 @@ Ative cabeçalhos extras (HSTS, cookies) via variáveis já suportadas em `setti
 | password auth failed | Senha não encode / senha errada | Atualizar `env.yaml` com URL-encoded |
 | Timeout inicial | DB ainda iniciando | Retry já cobre; aumentar `MIGRATION_MAX_RETRIES` se necessário |
 
+---
+
+## ☁️ Deploy no Cloud Run (Moderno)
+
+Nova abordagem (recomendada) usando build de imagem + Cloud Run:
+
+1. Provisionar/Postgres: `scripts/provision_cloudsql.ps1` (gera DATABASE_URL sugerida)
+2. Criar arquivo `deploy.env.yaml` a partir de `deploy.env.example.yaml` preenchendo segredos
+3. Executar: `scripts/deploy_fast.ps1 -EnvFile deploy.env.yaml`
+
+Entrypoint atual oferece duas opções de servidor ASGI:
+```
+USE_GUNICORN=1  -> Gunicorn + UvicornWorker (multi-worker CPU bound)
+USE_GUNICORN=0  -> Daphne (padrão; bom para websockets)
+```
+
+Variáveis de migração:
+```
+MIGRATION_MAX_RETRIES (default 1)
+MIGRATION_INITIAL_SLEEP_SECONDS (default 3)
+MIGRATION_BACKOFF_FACTOR (default 1.6)
+WAIT_FOR_CLOUDSQL=1 (aguarda socket Unix)
+```
+
+WhiteNoise (estáticos) é habilitado com `ENABLE_WHITENOISE=1` e os assets são coletados em build (imagem) reduzindo cold start.
+
+### Exemplo de `deploy.env.yaml`
+```
+DJANGO_SECRET_KEY: "<chave>"
+DJANGO_DEBUG: "False"
+DATABASE_URL: "postgres://pandora_user:XXXX@/pandora_app?host=/cloudsql/PROJETO:REGIAO:INSTANCIA"
+ENABLE_WHITENOISE: "1"
+MIGRATION_MAX_RETRIES: "10"
+WAIT_FOR_CLOUDSQL: "1"
+USE_GUNICORN: "0"
+```
+
+### Principais diferenças vs modelo App Engine
+| Item | App Engine | Cloud Run Moderno |
+|------|------------|-------------------|
+| Coleta estáticos | Runtime | Build-time (imagem) |
+| Migrações | Sem retry estruturado | Retry + backoff + espera socket |
+| Servidor | Gunicorn fixo | Daphne ou Gunicorn configurável |
+| Config Vars | env.yaml (blocagem) | YAML simples via `--env-vars-file` |
+| Proteção SQLite | Indireta | Bloqueio quando DEBUG=False sem DATABASE_URL |
+
+
 ### 10. Próximos Melhoramentos
 - Mover segredos para Secret Manager (usando substituição em tempo de build ou fetch no startup).
 - Configurar VPC Serverless Connector (se precisar acessar recursos privados).

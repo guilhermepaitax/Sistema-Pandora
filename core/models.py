@@ -27,6 +27,19 @@ if TYPE_CHECKING:  # Somente para hints; não falha em runtime se app não carre
 # Constantes globais reutilizadas
 ROLE_DEFAULT_NAME = "USER"
 
+# Importação opcional do registry de módulos (evita falha em migrações iniciais)
+try:  # pragma: no cover - proteção carregamento parcial
+    from core.module_registry import ESSENTIAL_MODULES as REGISTRY_ESSENTIAL_MODULES
+    from core.module_registry import PLAN_DEFAULT_MODULES as REGISTRY_PLAN_DEFAULT_MODULES
+except Exception:  # noqa: BLE001 - fallback amplo aceitável em fase de migração inicial
+    REGISTRY_PLAN_DEFAULT_MODULES = {
+        "BASIC": ["admin"],
+        "PRO": ["admin"],
+        "ENTERPRISE": ["admin"],
+        "CUSTOM": ["admin"],
+    }
+    REGISTRY_ESSENTIAL_MODULES = ["core", "admin"]
+
 
 logger = logging.getLogger(__name__)
 
@@ -511,6 +524,14 @@ class Tenant(TimestampedModel):
         ("ENTERPRISE", "Enterprise"),
         ("CUSTOM", "Personalizado"),
     ]
+    # Mapeamento definitivo: quais módulos cada plano inclui por padrão.
+    # IMPORTANTE: 'core' e 'admin' considerados essenciais e sempre incluídos.
+    # Planos podem ser expandidos manualmente (ex.: add-ons) mas nunca remover essenciais.
+    # Fonte única: importar do registry central.
+    # Evita divergência entre modelo / formulários / wizard / comandos.
+    PLAN_DEFAULT_MODULES: ClassVar[dict[str, list[str]]] = REGISTRY_PLAN_DEFAULT_MODULES
+    # No contexto do modelo consideramos essenciais exceto 'core' (sempre lógico)
+    ESSENTIAL_TENANT_MODULES: ClassVar[list[str]] = [m for m in REGISTRY_ESSENTIAL_MODULES if m != "core"]
     plano_assinatura = models.CharField(
         max_length=10,
         choices=PLANO_ASSINATURA_CHOICES,
@@ -603,26 +624,17 @@ class Tenant(TimestampedModel):
         """Save the tenant instance."""
         if self.subdomain:
             self.subdomain = self.subdomain.strip().lower()
-        # Compat testes: se em ambiente de teste e enabled_modules vazio, auto popular com todos módulos conhecidos
+        # Aplicar/migrar módulos de acordo com plano e política essencial (sempre garante essenciais)
         try:
-            if getattr(settings, "TESTING", False) and (not self.enabled_modules or self.enabled_modules == {}):
-                # Lista simplificada baseada em PANDORA_MODULES do settings se disponível
-                mods = [
-                    item["module_name"]
-                    for item in getattr(settings, "PANDORA_MODULES", [])
-                    if isinstance(item, dict) and item.get("module_name")
-                ]
-                if mods:
-                    self.enabled_modules = {"modules": sorted(set(mods))}
-            # Normalização estrita opcional
-            if getattr(settings, "FEATURE_STRICT_ENABLED_MODULES", False):
-                try:
-                    self.enabled_modules = self._normalize_enabled_modules(self.enabled_modules)
-                except (TypeError, json.JSONDecodeError):
-                    # Falha de normalização não deve impedir persistência; aplica fallback vazio canonical
-                    self.enabled_modules = {"modules": []}
-        except (AttributeError, TypeError) as e:
-            logger.warning("Falha ao processar enabled_modules no save do Tenant: %s", e)
+            self._apply_plan_and_essentials()
+        except Exception:
+            logger.exception("Falha ao aplicar módulos de plano/essenciais (prossegue com save).")
+        # Normalização estrita opcional (mantida depois da aplicação do plano)
+        if getattr(settings, "FEATURE_STRICT_ENABLED_MODULES", False):
+            try:
+                self.enabled_modules = self._normalize_enabled_modules(self.enabled_modules)
+            except (TypeError, json.JSONDecodeError):
+                self.enabled_modules = {"modules": []}
         super().save(*args, **kwargs)
 
     # Compat: alguns trechos legados referenciam tenant.slug; expor property.
@@ -700,11 +712,11 @@ class Tenant(TimestampedModel):
         Formato suportado: {'modules': ['mod1','mod2', ...]} somente.
         Qualquer divergência retorna False (dados devem ser previamente normalizados).
         """
-        # Módulos essenciais sempre ativos independentemente da configuração persistida.
-        # 'core' já é tratado de forma especial em has_module; aqui garantimos 'admin'
-        # para evitar bloqueio de gerenciamento de usuários em tenants recém-criados que
-        # não tiveram o módulo explicitamente marcado no wizard.
-        if module_name in {"admin", "core"}:
+        if module_name == "core":  # core sempre acessível enquanto tenant ativo
+            return True
+        # Essenciais (ex.: 'admin') devem retornar True mesmo que dados estejam inconsistentes
+        if module_name in self.ESSENTIAL_TENANT_MODULES:
+            # Garante idempotência: se não estiver persistido, ainda assim é considerado habilitado.
             return True
         data = self.enabled_modules
         if isinstance(data, dict):
@@ -712,6 +724,73 @@ class Tenant(TimestampedModel):
             if isinstance(mods, list):
                 return module_name in mods
         return False
+
+    # ------------------------------------------------------------------
+    # LÓGICA DE PLANOS/MÓDULOS
+    # ------------------------------------------------------------------
+    def _apply_plan_and_essentials(self) -> None:
+        """Aplica regras de módulos com base no plano e assegura essenciais.
+
+        Regras:
+        - Essenciais sempre presentes logicamente (persistidos se ausentes para consistência futura).
+        - Quando o campo já foi explicitamente configurado (dict/list/str não vazio),
+          considera-se seleção manual e NÃO adiciona defaults do plano (apenas garante essenciais).
+        - Quando o campo está vazio/indefinido, aplica-se os defaults do plano (exceto CUSTOM).
+        - Para CUSTOM: sempre preservar seleção manual (apenas garantir essenciais).
+        - Normaliza para formato {'modules': [...]}.
+        """
+        raw = self.enabled_modules
+        # Foi configurado manualmente? (qualquer representação não vazia)
+        manual_config = bool(raw)
+
+        # Extrair sinalizações explícitas do formato legado: {mod: {enabled: True/False}, ...}
+        explicit_enabled: set[str] = set()
+        explicit_disabled: set[str] = set()
+        if isinstance(raw, dict) and "modules" not in raw:
+            for k, v in raw.items():
+                if isinstance(v, dict) and "enabled" in v:
+                    if v.get("enabled") in (True, 1, "on", "ON"):
+                        explicit_enabled.add(k)
+                    else:
+                        explicit_disabled.add(k)
+                elif isinstance(v, (bool, int, str)):
+                    if v in (True, 1, "on", "ON"):
+                        explicit_enabled.add(k)
+                    else:
+                        explicit_disabled.add(k)
+
+        # Base atual normalizada (captura também casos de lista/CSV)
+        current = set(self._normalize_enabled_modules(raw).get("modules", []))
+        # Combinar com os explicitamente habilitados no formato legado
+        combined = set(current) | explicit_enabled
+
+        # Plano e defaults somente quando NÃO houver configuração manual
+        plan = getattr(self, "plano_assinatura", "BASIC") or "BASIC"
+        plan = plan if plan in self.PLAN_DEFAULT_MODULES else "BASIC"
+        if not manual_config and plan != "CUSTOM":
+            for m in self.PLAN_DEFAULT_MODULES.get(plan, []):
+                # Não incluir defaults explicitamente desabilitados por configuração legada
+                if m not in explicit_disabled:
+                    combined.add(m)
+
+        # Garantir essenciais
+        combined.update(self.ESSENTIAL_TENANT_MODULES)
+        # Remover placeholders vazios e persistir no formato canônico
+        final_list = sorted(m for m in combined if m)
+        self.enabled_modules = {"modules": final_list}
+
+    def recompute_modules_from_plan(self, *, persist: bool = True) -> list[str]:
+        """Recalcula módulos a partir do plano atual.
+
+        Parâmetros:
+        - persist: quando True (default) salva automaticamente as alterações.
+        """
+        self._apply_plan_and_essentials()
+        if persist:
+            super().save(update_fields=["enabled_modules"])
+        if isinstance(self.enabled_modules, dict):
+            return list(self.enabled_modules.get("modules", []))
+        return []
 
     def get_documento_principal(self) -> str | None:
         """Retorna o CPF ou CNPJ dependendo do tipo de pessoa."""
@@ -1488,7 +1567,7 @@ class Modulo(TimestampedModel):
     """Representa um módulo do sistema."""
 
     nome = models.CharField(max_length=100, verbose_name=_("Nome do Módulo"))
-    descricao = models.TextField(blank=True, verbose_name=_("Descrição"))
+    descricao = models.TextField(blank=True, default="", verbose_name=_("Descrição"))
     ativo_por_padrao = models.BooleanField(default=False, verbose_name=_("Ativo por Padrão para Novos Tenants"))
 
     class Meta(TimestampedModel.Meta):

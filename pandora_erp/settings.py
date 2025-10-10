@@ -6,7 +6,6 @@ from __future__ import annotations
 import importlib
 import logging
 import os
-import tempfile
 import warnings
 from datetime import timedelta
 from pathlib import Path
@@ -36,6 +35,11 @@ TWOFA_FERNET_KEYS = [s for s in os.environ.get("TWOFA_FERNET_KEYS", "").split(",
 TWOFA_RECOVERY_PEPPER = os.environ.get("TWOFA_RECOVERY_PEPPER", "")
 SECRET_KEY = os.environ.get("DJANGO_SECRET_KEY", "django-insecure-key-for-development-only")
 DEBUG = os.environ.get("DJANGO_DEBUG", "True") == "True"
+# Em Cloud Run: só forçar DEBUG=False automaticamente se já houver DATABASE_URL configurado.
+# Caso contrário mantemos DEBUG=True para permitir subir com SQLite enquanto DB não está provisionado
+if "K_SERVICE" in os.environ and "DJANGO_DEBUG" not in os.environ:
+    # Força False só se já houver DATABASE_URL; caso contrário mantém True (SQLite transitório)
+    DEBUG = not os.environ.get("DATABASE_URL")
 TESTING = bool(os.environ.get("PYTEST_CURRENT_TEST"))
 
 # =============================
@@ -62,12 +66,14 @@ ALLOWED_HOSTS = [
     "localhost",
     "127.0.0.1",
     "https://8000-i881injdm9bubmu7elb87-5ff893a2.manusvm.computer",
+    "pandora-app-580104943567.southamerica-east1.run.app",  # Adicionado para Cloud Run
     "*",  # fallback amplo (substituível por PANDORA_ALLOWED_HOSTS)
 ]
 CSRF_TRUSTED_ORIGINS = [
     "http://localhost:8000",
     "http://127.0.0.1:8000",
     "https://8000-i881injdm9bubmu7elb87-5ff893a2.manusvm.computer",
+    "https://pandora-app-580104943567.southamerica-east1.run.app",  # Adicionado para Cloud Run
 ]
 
 # Ajustes dinâmicos via env
@@ -274,12 +280,13 @@ DATABASES = {
 _db_url = os.environ.get("DATABASE_URL")
 if _db_url:
     import importlib
+    from urllib.parse import parse_qs, urlparse
 
     try:
         _djdb = importlib.import_module("dj_database_url")
+        DATABASES["default"] = _djdb.parse(_db_url, conn_max_age=600, ssl_require=True)
     except ModuleNotFoundError:
-        from urllib.parse import urlparse
-
+        # Fallback manual se dj_database_url não estiver instalado
         url = urlparse(_db_url)
         if url.scheme in {"postgres", "postgresql"}:
             DATABASES["default"] = {
@@ -292,8 +299,31 @@ if _db_url:
                 "CONN_MAX_AGE": 600,
                 "OPTIONS": {"sslmode": "require"},
             }
-    else:
-        DATABASES["default"] = _djdb.parse(_db_url, conn_max_age=600, ssl_require=True)
+
+    # Ajuste para socket Cloud SQL: host param na query (?host=/cloudsql/...)
+    try:
+        _parts = urlparse(_db_url)
+        _q = parse_qs(_parts.query)
+        # Se dj_database_url não pegou o host (comum em URLs sem netloc) e o param 'host' existe
+        if not DATABASES["default"].get("HOST") and "host" in _q:
+            socket_host = _q["host"][0]
+            DATABASES["default"]["HOST"] = socket_host
+            # Para socket unix, sslmode não faz sentido e pode causar erros.
+            if socket_host.startswith("/cloudsql/"):
+                # Garante que OPTIONS exista e seja um dicionário antes de tentar modificá-lo
+                options = DATABASES["default"].get("OPTIONS")
+                if isinstance(options, dict):
+                    options.pop("sslmode", None)
+                elif options is None:
+                    DATABASES["default"]["OPTIONS"] = {}
+    except Exception as _e:  # noqa: BLE001
+        # Usar o logger do Django que já está configurado
+        import logging
+
+        logging.getLogger(__name__).warning(
+            "Falha ao tentar ajustar o host do socket do Cloud SQL a partir da DATABASE_URL: %s",
+            _e,
+        )
 
 # Proteção: evitar uso acidental de SQLite em produção.
 ALLOW_SQLITE_PROD = os.environ.get("ALLOW_SQLITE_PROD") == "1"
@@ -320,6 +350,40 @@ if "sqlite" in engine_val:
     from django.db.backends.signals import connection_created
 
     connection_created.connect(enable_foreign_keys)
+
+# ---- Logging de informações do banco em startup (sem expor senha) ----
+if os.environ.get("PANDORA_LOG_DB_INFO", "1") == "1":  # habilitável
+    try:  # proteger contra qualquer erro em import time
+        _dbi = DATABASES.get("default", {})
+        _safe_opts = {}
+        _opts = _dbi.get("OPTIONS")
+        if isinstance(_opts, dict):
+            # copia mascarando possíveis valores sensíveis
+            for _k, _v in _opts.items():
+                _safe_opts[_k] = "***" if "key" in _k.lower() else _v
+        logging.getLogger("startup").info(
+            "DB config -> engine=%s name=%s host=%s user=%s options=%s",
+            _dbi.get("ENGINE"),
+            _dbi.get("NAME"),
+            _dbi.get("HOST"),
+            _dbi.get("USER"),
+            _safe_opts or None,
+        )
+        if "sqlite" in str(_dbi.get("ENGINE", "")):
+            logging.getLogger("startup").warning(
+                (
+                    "Rodando com SQLite. Para produção configure DATABASE_URL Postgres "
+                    "(ou ALLOW_SQLITE_PROD=1 conscientemente)."
+                ),
+            )
+        _db_name = str(_dbi.get("NAME", ""))
+        _engine = str(_dbi.get("ENGINE", ""))
+        if _db_name.endswith("postgres") and _engine.endswith("postgresql"):
+            logging.getLogger("startup").warning(
+                "Usando database 'postgres'. Recomenda-se criar um database dedicado (ex: pandora_app).",
+            )
+    except Exception as _exc:  # noqa: BLE001
+        logging.getLogger("startup").warning("Falha ao logar info de DB: %s", _exc)
 
 AUTH_PASSWORD_VALIDATORS = [
     {"NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator"},
@@ -349,11 +413,20 @@ USE_I18N = True
 USE_TZ = True
 
 STATIC_URL = "/static/"
-# Simplificação para ambiente App Engine: sempre servir assets versionados do repositório
-# e usar /tmp para qualquer operação eventual de collectstatic (que evitamos).
-_temp_static_dir = Path(tempfile.gettempdir()) / "pandora_staticfiles"
-STATIC_ROOT = _temp_static_dir if not DEBUG else (BASE_DIR / "staticfiles")
+# Em produção (Cloud Run) vamos coletar os estáticos em build-time para um diretório fixo
+# dentro da imagem (/app/staticfiles_collected). Em dev permanece pasta local.
+_default_prod_static_root = Path("/app/staticfiles_collected")
+if "K_SERVICE" in os.environ and not DEBUG and "STATIC_ROOT" not in os.environ:
+    # Garante alinhamento produção Cloud Run
+    os.environ["STATIC_ROOT"] = str(_default_prod_static_root)
+STATIC_ROOT = Path(
+    os.environ.get(
+        "STATIC_ROOT",
+        _default_prod_static_root if not DEBUG else (BASE_DIR / "staticfiles"),
+    ),
+)
 
+# Diretórios adicionais (fonte dos assets não processados). Mantém 'static/dist/...'
 STATICFILES_DIRS = [BASE_DIR / "static"]  # contém dist/
 
 logging.getLogger(__name__).info(
@@ -784,7 +857,7 @@ SECURE_HSTS_PRELOAD = False
 
 # Em produção, habilitar segurança HTTPS
 if not DEBUG:
-    SECURE_SSL_REDIRECT = True
+    SECURE_SSL_REDIRECT = False
     SECURE_HSTS_SECONDS = 31536000  # 1 ano
     SECURE_HSTS_INCLUDE_SUBDOMAINS = True
     SECURE_HSTS_PRELOAD = True
