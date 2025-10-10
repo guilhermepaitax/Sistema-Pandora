@@ -64,6 +64,15 @@ def redirect_to_dashboard(_request: HttpRequest) -> HttpResponse:
     return redirect("dashboard")
 
 
+def devtools_manifest(_request: HttpRequest) -> HttpResponse:
+    r"""Endpoint opcional para evitar 404 do Chrome DevTools em /.well-known/appspecific/com.chrome.devtools.json.
+
+    Retorna um JSON mínimo quando solicitado por ferramentas de desenvolvimento do navegador.
+    """
+    payload = {"version": 1, "name": "Pandora DevTools", "endpoints": []}
+    return HttpResponse(json.dumps(payload), content_type="application/json")
+
+
 urlpatterns = [
     path("django-admin/", admin.site.urls),
     # --- Página inicial redireciona para dashboard ---
@@ -72,6 +81,8 @@ urlpatterns = [
     path("dashboard/", dashboard, name="dashboard"),
     # Métricas Prometheus (opcional)
     path("metrics/", metrics_view, name="metrics"),
+    # Evita 404 de sondas do DevTools em dev
+    path(".well-known/appspecific/com.chrome.devtools.json", devtools_manifest),
     # --- Módulos ---
     path("core/", include("core.urls", namespace="core")),
     # APIs principais (namespaces usados nos testes)

@@ -32,7 +32,7 @@ from django.http import (
     JsonResponse,
 )
 from django.shortcuts import get_object_or_404, redirect, render
-from django.urls import reverse, reverse_lazy
+from django.urls import NoReverseMatch, reverse, reverse_lazy
 from django.utils import timezone
 from django.utils.translation import gettext_lazy as _
 from django.views.decorators.http import require_http_methods
@@ -1396,14 +1396,16 @@ def tenant_user_permissions(request: HttpRequest, pk: int) -> HttpResponse:
     else:
         tenant_user = get_object_or_404(TenantUser, pk=pk, tenant=tenant)
 
-    messages.info(
-        request,
-        "Gerenciamento de permissões para "
-        f"{tenant_user.user.get_full_name() or tenant_user.user.username} "
-        "será implementado em breve.",
-    )
-
-    return redirect("core:tenant_user_list")
+    # Redirecionar para a criação de permissão do módulo user_management com prefill do usuário
+    try:
+        url = reverse("user_management:permissao_create") + f"?user={tenant_user.user_id}"
+        return redirect(url)
+    except NoReverseMatch:  # pragma: no cover - caminho de fallback
+        messages.info(
+            request,
+            "Gerenciamento de permissões será implementado em breve.",
+        )
+        return redirect("core:tenant_user_list")
 
 
 @login_required

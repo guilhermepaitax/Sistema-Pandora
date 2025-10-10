@@ -76,24 +76,56 @@ class UsuarioCreateForm(UserCreationForm):
         self.request_user = kwargs.pop("request_user", None)
         self.tenant = kwargs.pop("tenant", None)
         super().__init__(*args, **kwargs)
+        self._restringir_opcoes_tipo_usuario()
+        self._aplicar_estilos_css()
+        self._configurar_privilegios_e_grupos()
 
+    def _restringir_opcoes_tipo_usuario(self) -> None:
+        """Restringe opções de tipo de usuário para não-superusuários."""
         if self.request_user and not self.request_user.is_superuser:
             self.fields["tipo_usuario"].choices = [
                 (k, v) for k, v in TipoUsuario.choices if k not in [TipoUsuario.SUPER_ADMIN, TipoUsuario.ADMIN_EMPRESA]
             ]
 
+    def _aplicar_estilos_css(self) -> None:
+        """Aplica classes CSS apropriadas em inputs e checkboxes."""
         for field in self.fields.values():
             field.widget.attrs["class"] = "form-control"
         for fname in ("is_active", "is_staff", "is_superuser"):
             if fname in self.fields and getattr(self.fields[fname].widget, "input_type", "") == "checkbox":
                 self.fields[fname].widget.attrs["class"] = "form-check-input"
 
+    def _configurar_privilegios_e_grupos(self) -> None:
+        """Desabilita campos privilegiados e controla exibição do campo de grupos."""
         if not (self.request_user and self.request_user.is_superuser):
             for fname in ("is_staff", "is_superuser"):
                 if fname in self.fields:
                     self.fields[fname].disabled = True
-            # Oculta o campo de grupos para não-superusuários por segurança (escopo global de grupos)
-            self.fields.pop("groups", None)
+
+            # Determina se o usuário autenticado é administrador do tenant
+            is_tenant_admin = False
+            try:
+                TenantUser = apps.get_model("core", "TenantUser")
+                if self.request_user is not None:
+                    is_tenant_admin = TenantUser.objects.filter(
+                        user=self.request_user,
+                        is_tenant_admin=True,
+                    ).exists()
+            except LookupError:
+                # Em caso de erro ao resolver o modelo (migrações iniciais, etc.), manter seguro
+                is_tenant_admin = False
+
+            if not is_tenant_admin and "groups" in self.fields:
+                # Usuário comum vê o campo, mas não pode alterá-lo
+                self.fields["groups"].disabled = True
+                self.fields["groups"].help_text = (
+                    (self.fields["groups"].help_text or "") + " Somente administradores do tenant podem alterar grupos."
+                ).strip()
+            elif "groups" in self.fields:
+                # Admin de tenant pode atribuir grupos existentes; adicionar dica visual
+                self.fields["groups"].help_text = (
+                    self.fields["groups"].help_text or ""
+                ) + " Seleção disponível para administradores do tenant."
 
     def clean_email(self) -> str:
         """Valida se o e-mail já está em uso."""
@@ -406,8 +438,19 @@ class PermissaoPersonalizadaForm(forms.ModelForm):
                 self.fields["scope_tenant"].required = False
 
         if self.tenant:
-            self.fields["user"].queryset = self.tenant.user_set.all()
+            # Limitar usuários ao tenant atual via vínculo TenantUser
+            try:
+                TenantUser = apps.get_model("core", "TenantUser")
+                user_ids = TenantUser.objects.filter(tenant=self.tenant).values_list("user_id", flat=True)
+                self.fields["user"].queryset = User.objects.filter(id__in=list(user_ids))
+            except LookupError:
+                # Fallback defensivo quando o app/core ainda não está disponível
+                self.fields["user"].queryset = User.objects.none()
+            except Exception:
+                logger.exception("Falha ao filtrar usuários por tenant")
+                self.fields["user"].queryset = User.objects.none()
         else:
+            # Fallback: todos usuários (usado apenas por superusuário sem tenant)
             self.fields["user"].queryset = User.objects.all()
 
         for field in self.fields.values():

@@ -233,9 +233,6 @@ TEMPLATES = [
                 "django.contrib.messages.context_processors.messages",
                 "core.context_processors.tenant_context",
             ],
-            "builtins": [
-                "core.templatetags.menu_tags",
-            ],
         },
     },
 ]
@@ -588,7 +585,8 @@ PANDORA_MODULES = [
         "name": "Administração",
         "icon": "fas fa-shield-alt",
         "url": "administration:admin_home",
-        "superuser_only": True,
+        # Disponível para administradores do tenant e superusuários
+        "tenant_admin_only": True,
     },
     # NÍVEL 2.5: RECURSOS HUMANOS COMPLETO
     {"name": "RECURSOS HUMANOS", "is_header": True},

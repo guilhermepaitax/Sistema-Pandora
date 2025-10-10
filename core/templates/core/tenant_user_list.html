@@ -140,8 +140,8 @@
                                data-bs-toggle="tooltip">
                                 <i class="fas fa-edit"></i>
                             </a>
-                            <a href="{% url 'core:tenant_user_permissions' tenant_user.pk %}" 
-                               class="btn btn-outline-success btn-action-sm" 
+                                     <a href="{% url 'user_management:permissao_create' %}?user={{ tenant_user.user_id }}" 
+                                         class="btn btn-outline-success btn-action-sm" 
                                title="Permissões" 
                                data-bs-toggle="tooltip">
                                 <i class="fas fa-key"></i>

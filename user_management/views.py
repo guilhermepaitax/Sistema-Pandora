@@ -24,7 +24,7 @@ from django.utils import timezone
 from django.utils.translation import gettext_lazy as _
 from django.views.generic import CreateView, DetailView, ListView, UpdateView, View
 
-from core.mixins import PageTitleMixin, SuperuserRequiredMixin, TenantAdminOrSuperuserMixin
+from core.mixins import PageTitleMixin, TenantAdminOrSuperuserMixin, TenantRequiredMixin
 from core.models import TenantUser
 from core.utils import get_current_tenant
 from shared.mixins.ui_permissions import UIPermissionsMixin
@@ -585,20 +585,41 @@ class PermissionRequiredMixin:
     permission_scope_tenant: ClassVar[bool] = True
 
     def dispatch(self, request: HttpRequest, *args: object, **kwargs: object) -> HttpResponse:
-        """Valida a permissão antes de despachar a requisição."""
+        """Valida a permissão antes de despachar a requisição.
+
+        Regras:
+        - Superusuário sempre permitido.
+        - Administrador do tenant (TenantUser.is_tenant_admin) também tem acesso básico.
+        - Caso contrário, usa o permission_resolver para decidir.
+        """
+        # Bypass para superusuário
+        if getattr(request.user, "is_superuser", False):
+            return cast("Any", super()).dispatch(request, *args, **kwargs)
+
+        # Contexto de tenant
+        tenant = getattr(request, "tenant", None) if self.permission_scope_tenant else None
+        if tenant is None and self.permission_scope_tenant:
+            # Sem tenant ativo, negar de forma consistente
+            return HttpResponseForbidden("Permissão negada: tenant ausente")
+
+        # Admin do tenant possui acesso às telas de permissão do próprio tenant
+        try:
+            is_admin = TenantUser.objects.filter(tenant=tenant, user=request.user, is_tenant_admin=True).exists()
+        except TenantUser.DoesNotExist:  # pragma: no cover - defensivo
+            is_admin = False
+
+        if is_admin:
+            return cast("Any", super()).dispatch(request, *args, **kwargs)
+
         if self.required_modulo and self.required_acao:
-            # Uso do resolver unificado (modernizado). Ação canônica: ACAO_MODULO em UPPER.
-            tenant = None
-            if self.permission_scope_tenant:
-                tenant = getattr(request, "tenant", None)
             action = f"{self.required_acao}_{self.required_modulo}".upper()
-            if not (tenant and has_permission(request.user, tenant, action, self.required_recurso)):
+            if not has_permission(request.user, tenant, action, self.required_recurso):
                 return HttpResponseForbidden("Permissão negada")
         # Em mixins, o analisador pode não inferir 'dispatch' no super. O cast resolve o alerta de tipo.
         return cast("Any", super()).dispatch(request, *args, **kwargs)
 
 
-class PermissaoListView(SuperuserRequiredMixin, PermissionRequiredMixin, PageTitleMixin, ListView):
+class PermissaoListView(TenantRequiredMixin, PermissionRequiredMixin, PageTitleMixin, ListView):
     """Lista permissões personalizadas com paginação e checagem de permissão."""
 
     model = PermissaoPersonalizada
@@ -611,7 +632,7 @@ class PermissaoListView(SuperuserRequiredMixin, PermissionRequiredMixin, PageTit
 
 
 class PermissaoCreateView(
-    SuperuserRequiredMixin,
+    TenantRequiredMixin,
     PermissionRequiredMixin,
     UserManagementFormMixin,
     LogActivityMixin,
@@ -646,8 +667,16 @@ class PermissaoCreateView(
         initial = super().get_initial()
         user_id = self.request.GET.get("user")
         if user_id:
+            tenant = getattr(self.request, "tenant", None)
             with contextlib.suppress(Exception):
-                initial["user"] = User.objects.get(pk=int(user_id))
+                uid = int(user_id)
+                # Busca o usuário e garante vínculo com tenant quando aplicável
+                target = User.objects.get(pk=uid)
+                if tenant:
+                    if TenantUser.objects.filter(tenant=tenant, user=target).exists():
+                        initial["user"] = target
+                else:
+                    initial["user"] = target
         tenant = getattr(self.request, "tenant", None)
         if tenant:
             initial["scope_tenant"] = tenant

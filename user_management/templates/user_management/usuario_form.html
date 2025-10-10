@@ -349,10 +349,26 @@
                                 {% endif %}
                                 <div class="form-text">
                                     Grupos de permissões do usuário
+                                    {% if form.groups.help_text %}
+                                        <br><small class="text-muted">{{ form.groups.help_text }}</small>
+                                    {% endif %}
                                 </div>
                             </div>
                         </div>
                         {% endif %}
+                        
+                        <!-- Acesso rápido para Permissões Personalizadas -->
+                        <div class="col-12">
+                            {% if object %}
+                                <a href="{% url 'user_management:permissao_create' %}?user={{ object.user.id }}" class="btn btn-outline-secondary">
+                                    <i class="fas fa-key me-2"></i>Configurar Permissões Personalizadas
+                                </a>
+                            {% else %}
+                                <button type="button" class="btn btn-outline-secondary" disabled title="Salve o usuário para configurar permissões">
+                                    <i class="fas fa-key me-2"></i>Configurar Permissões Personalizadas
+                                </button>
+                            {% endif %}
+                        </div>
                     </div>
 
                     <!-- Informações Adicionais (apenas para edição) -->

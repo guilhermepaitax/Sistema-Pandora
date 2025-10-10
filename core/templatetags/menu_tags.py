@@ -33,12 +33,26 @@ def _can_view_module(
     is_admin_of_tenant: bool,  # noqa: FBT001
     can_access_module_fn: Callable[..., Any] | None,
 ) -> bool:
-    """Retorna True se o usuário pode visualizar o módulo informado."""
+    """Retorna True se o usuário pode visualizar o módulo informado.
+
+    Regras adicionais:
+    - superuser_only: somente superusuários veem o item (inclui cabeçalhos).
+    - tenant_admin_only: somente administradores do tenant (ou superuser).
+    """
+    # 1) Itens exclusivos de superusuário (inclusive cabeçalhos)
+    if module_config.get("superuser_only") and not getattr(user, "is_superuser", False):
+        return False
+
+    # 2) Cabeçalhos genéricos liberados (se não forem exclusivos de superuser)
     if module_config.get("is_header"):
         return True
 
     module_name = module_config.get("module_name")
     allowed = False
+
+    # Regra explícita: itens marcados como superuser_only só aparecem para superusuário
+    if module_config.get("superuser_only") and not getattr(user, "is_superuser", False):
+        return False
 
     if getattr(settings, "FEATURE_UNIFIED_ACCESS", False) and can_access_module_fn:
         decision = can_access_module_fn(user, tenant, module_name)
