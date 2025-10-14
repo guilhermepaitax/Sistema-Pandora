@@ -10,9 +10,10 @@ console_command = 'python manage.py shell'
 
 [build]
 
-[deploy]
-  # Mantemos migrate aqui (além do entrypoint) para garantir migrações em releases
-  release_command = 'python manage.py migrate --noinput'
+# [deploy]
+#  Desabilitado release_command enquanto usamos SQLite em volume, pois o release
+#  normalmente não monta volumes. As migrações rodam no entrypoint com o volume montado.
+#  release_command = 'python manage.py migrate --noinput'
 
 [env]
   # Nosso entrypoint expõe 8080 por padrão; manter consistente
