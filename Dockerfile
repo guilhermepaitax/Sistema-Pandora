@@ -11,6 +11,14 @@ RUN apt-get update && apt-get install -y \
     gcc \
     pkg-config \
     libcairo2-dev \
+    libpango-1.0-0 \
+    libpangoft2-1.0-0 \
+    libpangocairo-1.0-0 \
+    libgdk-pixbuf2.0-0 \
+    shared-mime-info \
+    libffi-dev \
+    libxml2-dev \
+    libxslt1-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Diretório de trabalho consistente com o entrypoint
@@ -20,8 +28,9 @@ WORKDIR /app
 COPY requirements.txt /app/
 RUN pip install --upgrade pip && pip install -r requirements.txt
 
-# Copia o restante do código
 COPY . /app
+# Garante diretório de dados para SQLite mesmo se volume não montar
+RUN mkdir -p /data && chmod 777 /data
 
 # Coleta estáticos em build; define STATIC_ROOT para dentro da imagem
 ENV STATIC_ROOT=/app/staticfiles_collected

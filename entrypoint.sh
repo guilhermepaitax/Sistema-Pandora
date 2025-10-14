@@ -4,6 +4,14 @@ set -e
 PORT="${PORT:-8080}"
 echo "[entrypoint] Iniciando Pandora ERP na porta ${PORT} (PID $$)"
 
+# Se estiver configurado para usar /data/db.sqlite3 mas /data não estiver montado/escrevível, faz fallback para /app/db.sqlite3
+if [ -n "$PANDORA_DB_FILE" ] && echo "$PANDORA_DB_FILE" | grep -q '^/data/' ; then
+  if [ ! -w /data ]; then
+    echo "[entrypoint] Aviso: /data não montado ou sem escrita. Fallback para /app/db.sqlite3" >&2
+    export PANDORA_DB_FILE="/app/db.sqlite3"
+  fi
+fi
+
 # Aguarda opcionalmente o socket do Cloud SQL aparecer quando usamos conexão via Unix Socket.
 # Ativado por padrão (defina WAIT_FOR_CLOUDSQL=0 para desabilitar).
 wait_for_cloudsql() {
