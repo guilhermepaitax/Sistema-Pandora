@@ -1,0 +1,44 @@
+# fly.toml app configuration file generated for pandora-app on 2025-10-14T11:49:16-03:00
+#
+# See https://fly.io/docs/reference/configuration/ for information about how to use this file.
+#
+
+app = 'pandora-app'
+primary_region = 'gru'
+# Nosso container usa WORKDIR /app; o console usa python manage.py do diretório atual
+console_command = 'python manage.py shell'
+
+[build]
+
+[deploy]
+  # Mantemos migrate aqui (além do entrypoint) para garantir migrações em releases
+  release_command = 'python manage.py migrate --noinput'
+
+[env]
+  # Nosso entrypoint expõe 8080 por padrão; manter consistente
+  PORT = '8080'
+  # Usa Gunicorn via entrypoint (evita burlar migrações/superuser)
+  USE_GUNICORN = '1'
+
+#[processes]
+# Não definimos processos customizados para não pular o entrypoint.sh
+# O CMD do container (entrypoint.sh) gerencia migrações e inicia o servidor
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = 'stop'
+  auto_start_machines = true
+  min_machines_running = 0
+  # processes = ['app']
+
+[[vm]]
+  # Reduz para 256MB para economizar custo; ajuste se faltar memória
+  memory = '256mb'
+  cpu_kind = 'shared'
+  cpus = 1
+
+[[statics]]
+  # Arquivos estáticos coletados em build para este caminho
+  guest_path = '/app/staticfiles_collected'
+  url_prefix = '/static/'
