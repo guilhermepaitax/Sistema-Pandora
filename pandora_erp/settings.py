@@ -262,11 +262,14 @@ if not DISABLE_CHANNELS:
 else:
     CHANNEL_LAYERS = {}
 
+_db_file_env = os.environ.get("PANDORA_DB_FILE", "db.sqlite3")
+_sqlite_name = _db_file_env if _db_file_env.startswith("/") else (BASE_DIR / _db_file_env)
+
 DATABASES = {
     "default": {
         "ENGINE": "django.db.backends.sqlite3",
         # Permite redefinir o arquivo do banco via variável de ambiente (ex: PANDORA_DB_FILE=db_new.sqlite3)
-        "NAME": BASE_DIR / os.environ.get("PANDORA_DB_FILE", "db.sqlite3"),
+        "NAME": _sqlite_name,
         "OPTIONS": {
             "timeout": 30,
         },
