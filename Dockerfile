@@ -5,8 +5,9 @@ FROM python:${PYTHON_VERSION}
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
-# Dependências de build para psycopg2, Cairo/pycairo e afins
-RUN apt-get update && apt-get install -y \
+# Dependências de build e runtime para psycopg2, Cairo/Pango, WeasyPrint, lxml
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
     libpq-dev \
     gcc \
     pkg-config \
@@ -14,11 +15,16 @@ RUN apt-get update && apt-get install -y \
     libpango-1.0-0 \
     libpangoft2-1.0-0 \
     libpangocairo-1.0-0 \
-    libgdk-pixbuf2.0-0 \
+    libgdk-pixbuf-2.0-0 \
     shared-mime-info \
     libffi-dev \
     libxml2-dev \
     libxslt1-dev \
+    libjpeg62-turbo-dev \
+    zlib1g-dev \
+    libfreetype6-dev \
+    libharfbuzz-dev \
+    libfribidi0 \
     && rm -rf /var/lib/apt/lists/*
 
 # Diretório de trabalho consistente com o entrypoint
