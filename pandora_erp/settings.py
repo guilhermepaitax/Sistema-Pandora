@@ -1,10 +1,10 @@
-# pandora_erp/settings.py
-
 """Django settings for pandora_erp project."""
 
 from __future__ import annotations
 
+# Imports padrão (ordenados para conformidade com isort / Ruff I001)
 import importlib
+import logging
 import os
 import warnings
 from datetime import timedelta
@@ -14,6 +14,10 @@ from pathlib import Path
 importlib.import_module("core.monkeypatches")
 
 BASE_DIR = Path(__file__).resolve().parent.parent
+
+# =============================
+# Versão da aplicação (atualizar manual ou derivar de tag no futuro)
+VERSION = os.environ.get("PANDORA_VERSION", "0.1.0-dev")
 
 FEATURE_ENFORCE_PERMISSION_RESOLVER_STRICT = (
     os.environ.get("FEATURE_ENFORCE_PERMISSION_RESOLVER_STRICT", "False") == "True"
@@ -31,6 +35,11 @@ TWOFA_FERNET_KEYS = [s for s in os.environ.get("TWOFA_FERNET_KEYS", "").split(",
 TWOFA_RECOVERY_PEPPER = os.environ.get("TWOFA_RECOVERY_PEPPER", "")
 SECRET_KEY = os.environ.get("DJANGO_SECRET_KEY", "django-insecure-key-for-development-only")
 DEBUG = os.environ.get("DJANGO_DEBUG", "True") == "True"
+# Em Cloud Run: só forçar DEBUG=False automaticamente se já houver DATABASE_URL configurado.
+# Caso contrário mantemos DEBUG=True para permitir subir com SQLite enquanto DB não está provisionado
+if "K_SERVICE" in os.environ and "DJANGO_DEBUG" not in os.environ:
+    # Força False só se já houver DATABASE_URL; caso contrário mantém True (SQLite transitório)
+    DEBUG = not os.environ.get("DATABASE_URL")
 TESTING = bool(os.environ.get("PYTEST_CURRENT_TEST"))
 
 # =============================
@@ -57,13 +66,23 @@ ALLOWED_HOSTS = [
     "localhost",
     "127.0.0.1",
     "https://8000-i881injdm9bubmu7elb87-5ff893a2.manusvm.computer",
-    "*",
+    "pandora-app-580104943567.southamerica-east1.run.app",  # Adicionado para Cloud Run
+    "*",  # fallback amplo (substituível por PANDORA_ALLOWED_HOSTS)
 ]
 CSRF_TRUSTED_ORIGINS = [
     "http://localhost:8000",
     "http://127.0.0.1:8000",
     "https://8000-i881injdm9bubmu7elb87-5ff893a2.manusvm.computer",
+    "https://pandora-app-580104943567.southamerica-east1.run.app",  # Adicionado para Cloud Run
 ]
+
+# Ajustes dinâmicos via env
+_allowed_hosts_env = os.environ.get("PANDORA_ALLOWED_HOSTS")
+if _allowed_hosts_env:
+    ALLOWED_HOSTS = [h.strip() for h in _allowed_hosts_env.split(",") if h.strip()]
+_csrf_env = os.environ.get("PANDORA_CSRF_ORIGINS")
+if _csrf_env:
+    CSRF_TRUSTED_ORIGINS = [o.strip().rstrip("/") for o in _csrf_env.split(",") if o.strip()]
 
 # Render.com: adicionar host/origem dinamicamente se variável estiver presente
 _render_external_url = os.environ.get("RENDER_EXTERNAL_URL")
@@ -77,6 +96,41 @@ if _render_external_url:
         _origin = f"{_p.scheme}://{_p.hostname}"
         if _origin not in CSRF_TRUSTED_ORIGINS:
             CSRF_TRUSTED_ORIGINS.append(_origin)
+
+# =============================
+# Segurança HTTP (valores seguros mínimos; podem ser endurecidos depois)
+CSP_DEFAULT_SRC = ("'self'",)
+CSP_STYLE_SRC = ("'self'", "'unsafe-inline'", "https://fonts.googleapis.com")
+CSP_SCRIPT_SRC = ("'self'", "'unsafe-inline'")  # Avaliar nonce/hash posteriormente
+CSP_IMG_SRC = ("'self'", "data:")
+
+SECURE_HSTS_SECONDS = int(os.environ.get("SECURE_HSTS_SECONDS", str(60 if DEBUG else 60 * 60 * 24 * 30)))
+SECURE_HSTS_INCLUDE_SUBDOMAINS = not DEBUG
+SECURE_HSTS_PRELOAD = os.environ.get("SECURE_HSTS_PRELOAD", "False") == "True"
+SECURE_BROWSER_XSS_FILTER = True
+SECURE_CONTENT_TYPE_NOSNIFF = True
+SESSION_COOKIE_SECURE = os.environ.get("SESSION_COOKIE_SECURE", "1" if not DEBUG else "0") == "1"
+CSRF_COOKIE_SECURE = os.environ.get("CSRF_COOKIE_SECURE", "1" if not DEBUG else "0") == "1"
+SECURE_SSL_REDIRECT = os.environ.get("DJANGO_FORCE_SSL", "True" if not DEBUG else "False") == "True"
+REFERRER_POLICY = "strict-origin-when-cross-origin"
+X_FRAME_OPTIONS = "DENY"
+
+# Email backend default (console em dev; SMTP se variáveis definidas)
+EMAIL_BACKEND = os.environ.get(
+    "EMAIL_BACKEND",
+    "django.core.mail.backends.console.EmailBackend" if DEBUG else "django.core.mail.backends.smtp.EmailBackend",
+)
+EMAIL_HOST = os.environ.get("EMAIL_HOST", "localhost")
+EMAIL_PORT = int(os.environ.get("EMAIL_PORT", "25"))
+EMAIL_HOST_USER = os.environ.get("EMAIL_HOST_USER", "")
+EMAIL_HOST_PASSWORD = os.environ.get("EMAIL_HOST_PASSWORD", "")
+EMAIL_USE_TLS = os.environ.get("EMAIL_USE_TLS", "False") == "True"
+DEFAULT_FROM_EMAIL = os.environ.get("DEFAULT_FROM_EMAIL", "noreply@pandora.local")
+
+# Login throttle progressivo (além de rate limit global por IP)
+LOGIN_PROGRESSIVE_DELAY_BASE_SECONDS = int(os.environ.get("LOGIN_PROGRESSIVE_DELAY_BASE_SECONDS", "1"))
+LOGIN_PROGRESSIVE_DELAY_THRESHOLD = int(os.environ.get("LOGIN_PROGRESSIVE_DELAY_THRESHOLD", "5"))
+LOGIN_PROGRESSIVE_DELAY_MAX_SECONDS = int(os.environ.get("LOGIN_PROGRESSIVE_DELAY_MAX_SECONDS", "12"))
 
 INSTALLED_APPS = [
     # Aplicação ASGI em primeiro lugar
@@ -142,9 +196,10 @@ INSTALLED_APPS = [
 ]
 
 
+_enable_whitenoise = os.environ.get("ENABLE_WHITENOISE", "False") == "True"
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
-    "whitenoise.middleware.WhiteNoiseMiddleware",
+    *(["whitenoise.middleware.WhiteNoiseMiddleware"] if _enable_whitenoise else []),
     "django.contrib.sessions.middleware.SessionMiddleware",
     "corsheaders.middleware.CorsMiddleware",
     "django.middleware.common.CommonMiddleware",
@@ -178,9 +233,6 @@ TEMPLATES = [
                 "django.contrib.messages.context_processors.messages",
                 "core.context_processors.tenant_context",
             ],
-            "builtins": [
-                "core.templatetags.menu_tags",
-            ],
         },
     },
 ]
@@ -189,37 +241,32 @@ WSGI_APPLICATION = "pandora_erp.wsgi.application"
 ASGI_APPLICATION = "pandora_erp.asgi.application"
 
 REDIS_URL = os.environ.get("REDIS_URL") or os.environ.get("REDIS_HOST")
-if REDIS_URL:
-    # Formatos aceitos agora:
-    # 1) redis://host:port/db
-    # 2) rediss://host:port/db  (TLS - ex: Upstash)
-    # 3) host  (sem esquema, opcionalmente acompanhado de REDIS_PORT)
-    # 4) host:port (sem esquema)
-    # Só transformamos quando NÃO há esquema explícito (nem redis:// nem rediss://)
-    if not REDIS_URL.startswith(("redis://", "rediss://")):
-        # Pode vir no formato host ou host:port
-        if ":" in REDIS_URL:
-            host, port = REDIS_URL.split(":", 1)
-        else:
-            host = REDIS_URL
-            port = os.environ.get("REDIS_PORT", "6379")
-        REDIS_URL = f"redis://{host}:{port}/0"
-    CHANNEL_LAYERS = {
-        "default": {
-            "BACKEND": "channels_redis.core.RedisChannelLayer",
-            # Se for rediss:// (TLS) o redis-py reconhece automaticamente.
-            # Caso seja necessário desabilitar validação de certificado (não recomendado)
-            # usar forma avançada via tuple (ver docs channels_redis) ajustando ssl.
-            "CONFIG": {"hosts": [REDIS_URL]},
-        },
-    }
+DISABLE_CHANNELS = os.environ.get("DISABLE_CHANNELS", "0") == "1"
+if not DISABLE_CHANNELS:
+    if REDIS_URL:
+        if not REDIS_URL.startswith(("redis://", "rediss://")):
+            if ":" in REDIS_URL:
+                host, port = REDIS_URL.split(":", 1)
+            else:
+                host = REDIS_URL
+                port = os.environ.get("REDIS_PORT", "6379")
+            REDIS_URL = f"redis://{host}:{port}/0"
+        CHANNEL_LAYERS = {
+            "default": {
+                "BACKEND": "channels_redis.core.RedisChannelLayer",
+                "CONFIG": {"hosts": [REDIS_URL]},
+            },
+        }
+    else:
+        CHANNEL_LAYERS = {"default": {"BACKEND": "channels.layers.InMemoryChannelLayer"}}
 else:
-    CHANNEL_LAYERS = {"default": {"BACKEND": "channels.layers.InMemoryChannelLayer"}}
+    CHANNEL_LAYERS = {}
 
 DATABASES = {
     "default": {
         "ENGINE": "django.db.backends.sqlite3",
-        "NAME": BASE_DIR / "db.sqlite3",
+        # Permite redefinir o arquivo do banco via variável de ambiente (ex: PANDORA_DB_FILE=db_new.sqlite3)
+        "NAME": BASE_DIR / os.environ.get("PANDORA_DB_FILE", "db.sqlite3"),
         "OPTIONS": {
             "timeout": 30,
         },
@@ -230,12 +277,13 @@ DATABASES = {
 _db_url = os.environ.get("DATABASE_URL")
 if _db_url:
     import importlib
+    from urllib.parse import parse_qs, urlparse
 
     try:
         _djdb = importlib.import_module("dj_database_url")
+        DATABASES["default"] = _djdb.parse(_db_url, conn_max_age=600, ssl_require=True)
     except ModuleNotFoundError:
-        from urllib.parse import urlparse
-
+        # Fallback manual se dj_database_url não estiver instalado
         url = urlparse(_db_url)
         if url.scheme in {"postgres", "postgresql"}:
             DATABASES["default"] = {
@@ -248,8 +296,31 @@ if _db_url:
                 "CONN_MAX_AGE": 600,
                 "OPTIONS": {"sslmode": "require"},
             }
-    else:
-        DATABASES["default"] = _djdb.parse(_db_url, conn_max_age=600, ssl_require=True)
+
+    # Ajuste para socket Cloud SQL: host param na query (?host=/cloudsql/...)
+    try:
+        _parts = urlparse(_db_url)
+        _q = parse_qs(_parts.query)
+        # Se dj_database_url não pegou o host (comum em URLs sem netloc) e o param 'host' existe
+        if not DATABASES["default"].get("HOST") and "host" in _q:
+            socket_host = _q["host"][0]
+            DATABASES["default"]["HOST"] = socket_host
+            # Para socket unix, sslmode não faz sentido e pode causar erros.
+            if socket_host.startswith("/cloudsql/"):
+                # Garante que OPTIONS exista e seja um dicionário antes de tentar modificá-lo
+                options = DATABASES["default"].get("OPTIONS")
+                if isinstance(options, dict):
+                    options.pop("sslmode", None)
+                elif options is None:
+                    DATABASES["default"]["OPTIONS"] = {}
+    except Exception as _e:  # noqa: BLE001
+        # Usar o logger do Django que já está configurado
+        import logging
+
+        logging.getLogger(__name__).warning(
+            "Falha ao tentar ajustar o host do socket do Cloud SQL a partir da DATABASE_URL: %s",
+            _e,
+        )
 
 # Proteção: evitar uso acidental de SQLite em produção.
 ALLOW_SQLITE_PROD = os.environ.get("ALLOW_SQLITE_PROD") == "1"
@@ -276,6 +347,40 @@ if "sqlite" in engine_val:
     from django.db.backends.signals import connection_created
 
     connection_created.connect(enable_foreign_keys)
+
+# ---- Logging de informações do banco em startup (sem expor senha) ----
+if os.environ.get("PANDORA_LOG_DB_INFO", "1") == "1":  # habilitável
+    try:  # proteger contra qualquer erro em import time
+        _dbi = DATABASES.get("default", {})
+        _safe_opts = {}
+        _opts = _dbi.get("OPTIONS")
+        if isinstance(_opts, dict):
+            # copia mascarando possíveis valores sensíveis
+            for _k, _v in _opts.items():
+                _safe_opts[_k] = "***" if "key" in _k.lower() else _v
+        logging.getLogger("startup").info(
+            "DB config -> engine=%s name=%s host=%s user=%s options=%s",
+            _dbi.get("ENGINE"),
+            _dbi.get("NAME"),
+            _dbi.get("HOST"),
+            _dbi.get("USER"),
+            _safe_opts or None,
+        )
+        if "sqlite" in str(_dbi.get("ENGINE", "")):
+            logging.getLogger("startup").warning(
+                (
+                    "Rodando com SQLite. Para produção configure DATABASE_URL Postgres "
+                    "(ou ALLOW_SQLITE_PROD=1 conscientemente)."
+                ),
+            )
+        _db_name = str(_dbi.get("NAME", ""))
+        _engine = str(_dbi.get("ENGINE", ""))
+        if _db_name.endswith("postgres") and _engine.endswith("postgresql"):
+            logging.getLogger("startup").warning(
+                "Usando database 'postgres'. Recomenda-se criar um database dedicado (ex: pandora_app).",
+            )
+    except Exception as _exc:  # noqa: BLE001
+        logging.getLogger("startup").warning("Falha ao logar info de DB: %s", _exc)
 
 AUTH_PASSWORD_VALIDATORS = [
     {"NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator"},
@@ -305,12 +410,28 @@ USE_I18N = True
 USE_TZ = True
 
 STATIC_URL = "/static/"
-STATIC_ROOT = BASE_DIR / "staticfiles"
-STATICFILES_DIRS = [BASE_DIR / "static"]
+# Em produção (Cloud Run) vamos coletar os estáticos em build-time para um diretório fixo
+# dentro da imagem (/app/staticfiles_collected). Em dev permanece pasta local.
+_default_prod_static_root = Path("/app/staticfiles_collected")
+if "K_SERVICE" in os.environ and not DEBUG and "STATIC_ROOT" not in os.environ:
+    # Garante alinhamento produção Cloud Run
+    os.environ["STATIC_ROOT"] = str(_default_prod_static_root)
+STATIC_ROOT = Path(
+    os.environ.get(
+        "STATIC_ROOT",
+        _default_prod_static_root if not DEBUG else (BASE_DIR / "staticfiles"),
+    ),
+)
 
-# Armazenamento otimizado de estáticos em produção (WhiteNoise)
-if not DEBUG:
-    STATICFILES_STORAGE = "whitenoise.storage.CompressedManifestStaticFilesStorage"
+# Diretórios adicionais (fonte dos assets não processados). Mantém 'static/dist/...'
+STATICFILES_DIRS = [BASE_DIR / "static"]  # contém dist/
+
+logging.getLogger(__name__).info(
+    "[settings] DEBUG=%s STATIC_ROOT=%s STATICFILES_DIRS=%s",
+    DEBUG,
+    STATIC_ROOT,
+    STATICFILES_DIRS,
+)
 
 # ----------------------------------------------------------------------------
 # Warnings Filters (redução de ruído deprecações conhecidas)
@@ -464,7 +585,8 @@ PANDORA_MODULES = [
         "name": "Administração",
         "icon": "fas fa-shield-alt",
         "url": "administration:admin_home",
-        "superuser_only": True,
+        # Disponível para administradores do tenant e superusuários
+        "tenant_admin_only": True,
     },
     # NÍVEL 2.5: RECURSOS HUMANOS COMPLETO
     {"name": "RECURSOS HUMANOS", "is_header": True},
@@ -717,8 +839,6 @@ PRONTUARIOS_IMAGE_QUALITY = 85
 PRONTUARIOS_BACKUP_RETENTION_DAYS = 90
 PRONTUARIOS_AUTO_BACKUP_ENABLED = True
 
-STATIC_ROOT = BASE_DIR / "staticfiles"
-
 # ============================================================================
 # CONFIGURAÇÕES DE SEGURANÇA
 # ============================================================================
@@ -735,7 +855,7 @@ SECURE_HSTS_PRELOAD = False
 
 # Em produção, habilitar segurança HTTPS
 if not DEBUG:
-    SECURE_SSL_REDIRECT = True
+    SECURE_SSL_REDIRECT = False
     SECURE_HSTS_SECONDS = 31536000  # 1 ano
     SECURE_HSTS_INCLUDE_SUBDOMAINS = True
     SECURE_HSTS_PRELOAD = True

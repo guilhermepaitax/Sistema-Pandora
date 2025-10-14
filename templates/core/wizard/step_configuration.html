@@ -174,12 +174,22 @@
                         {% for m in modules %}
                         <div class="module-card" data-category-item="{{ category|slugify }}">
                             <div class="form-check">
-                                <input class="form-check-input" type="checkbox" name="enabled_modules" value="{{ m.key }}" id="module_{{ m.key }}">
+                                <input
+                                    class="form-check-input"
+                                    type="checkbox"
+                                    name="enabled_modules"
+                                    value="{{ m.key }}"
+                                    id="module_{{ m.key }}"
+                                    {% if m.locked %}checked disabled data-locked="1"{% else %}{% if m.key in form.fields.enabled_modules.initial %}checked{% endif %}{% endif %}
+                                >
                                 <label class="form-check-label" for="module_{{ m.key }}">
                                     <div class="module-header">
                                         <i class="{{ m.icon }} {{ m.color }} me-2"></i>
                                         <span class="module-name">{{ m.label }}</span>
+                                        {% if m.is_essential %}<span class="badge bg-dark ms-2">Essencial</span>{% endif %}
+                                        {% if m.is_default and not m.is_essential %}<span class="badge bg-primary ms-2">Plano</span>{% endif %}
                                         {% if m.premium %}<span class="badge bg-warning text-dark ms-2">Premium</span>{% endif %}
+                                        {% if m.locked %}<span class="badge bg-secondary ms-2">Bloqueado</span>{% endif %}
                                     </div>
                                     {% if m.description %}
                                     <small class="module-description text-muted d-block mt-1">
@@ -354,4 +364,49 @@
         </div>
     </div>
 </div> {# wizard-configuration-section #}
+<script>
+// JS leve para contador e seleção em massa sem alterar identidade visual
+(function(){
+    function updateCounter(){
+        var total = document.querySelectorAll('#wizard-configuration-section .form-check-input[type="checkbox"][name="enabled_modules"]:checked').length;
+        var el = document.getElementById('moduleCounter');
+        if(el){ el.textContent = total + ' módulos selecionados'; }
+    }
+    document.addEventListener('DOMContentLoaded', function(){
+        updateCounter();
+        // Botões globais
+        var btnAll = document.getElementById('btnSelectAllModules');
+        var btnClear = document.getElementById('btnClearAllModules');
+        if(btnAll){
+            btnAll.addEventListener('click', function(){
+                document.querySelectorAll('#wizard-configuration-section .form-check-input[type="checkbox"][name="enabled_modules"]:not([disabled])').forEach(function(cb){ cb.checked = true; });
+                updateCounter();
+            });
+        }
+        if(btnClear){
+            btnClear.addEventListener('click', function(){
+                document.querySelectorAll('#wizard-configuration-section .form-check-input[type="checkbox"][name="enabled_modules"]:not([disabled])').forEach(function(cb){ cb.checked = false; });
+                updateCounter();
+            });
+        }
+        // Seleção por categoria
+        document.querySelectorAll('#wizard-configuration-section .master-category').forEach(function(master){
+            master.addEventListener('change', function(){
+                var target = this.getAttribute('data-category-target');
+                if(!target) return;
+                document.querySelectorAll('#wizard-configuration-section [data-category-item="'+target+'"]').forEach(function(card){
+                    card.querySelectorAll('input.form-check-input[type="checkbox"][name="enabled_modules"]:not([disabled])').forEach(function(cb){
+                        cb.checked = master.checked;
+                    });
+                });
+                updateCounter();
+            });
+        });
+        // Atualizar contador em qualquer alteração
+        document.querySelectorAll('#wizard-configuration-section input.form-check-input[type="checkbox"][name="enabled_modules"]').forEach(function(cb){
+            cb.addEventListener('change', updateCounter);
+        });
+    });
+})();
+</script>
 {% endblock %}

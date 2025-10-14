@@ -309,6 +309,150 @@ DATABASE_URL=postgresql://usuario:senha@localhost:5432/pandora_erp
 python manage.py collectstatic
 ```
 
+## ☁️ Deploy no Google App Engine + Cloud SQL (PostgreSQL)
+
+Resumo dos passos implementados no projeto para rodar em App Engine Standard com Cloud SQL via Unix Socket.
+
+### 1. Pré-requisitos GCP
+1. Projeto criado (ex: `pandora-474013`).
+2. APIs habilitadas:
+   - App Engine Admin API
+   - Cloud SQL Admin API
+   - Secret Manager (opcional)
+3. App Engine inicializado na região desejada (ex: `gcloud app create --region=us-central`).
+
+### 2. Instância Cloud SQL
+```
+gcloud sql instances create pandora \
+  --database-version=POSTGRES_17 \
+  --tier=db-f1-micro \
+  --region=us-central1 \
+  --storage-auto-increase \
+  --backup-start-time=03:00
+```
+Defina a senha do usuário `postgres`:
+```
+gcloud sql users set-password postgres --instance=pandora --password=STRONG_PASSWORD
+```
+
+### 3. Criar DB e Usuário Dedicado
+Via proxy ou Cloud Console (psql):
+```
+CREATE DATABASE pandora_app ENCODING 'UTF8' TEMPLATE template0;
+CREATE USER pandora_user WITH PASSWORD 'SENHA_FORTE';
+GRANT ALL PRIVILEGES ON DATABASE pandora_app TO pandora_user;
+ALTER DATABASE pandora_app OWNER TO pandora_user;
+```
+Script auxiliar: `scripts/cloudsql_init.sql`.
+
+### 4. Configurar `env.yaml`
+Entrada típica (Unix socket):
+```
+DATABASE_URL=postgres://pandora_user:SENHA_URL@/pandora_app?host=/cloudsql/PROJETO:REGIAO:INSTANCIA
+```
+Exemplo real:
+```
+postgres://pandora_user:Mal13dad%40@/pandora_app?host=/cloudsql/pandora-474013:us-central1:pandora
+```
+Importante: encode de caracteres especiais na senha (`@` → `%40`).
+
+### 5. Arquivo `app.yaml`
+Já incluído no repositório:
+```
+runtime: python311
+entrypoint: ./entrypoint.sh
+beta_settings:
+  cloud_sql_instances: PROJETO:REGIAO:INSTANCIA
+includes:
+  - env.yaml
+```
+
+### 6. Retry de Migrações
+`entrypoint.sh` possui loop exponencial (padrão 10 tentativas). Ajuste variáveis:
+```
+MIGRATION_MAX_RETRIES=10
+MIGRATION_INITIAL_SLEEP_SECONDS=3
+MIGRATION_BACKOFF_FACTOR=1.6
+```
+
+### 7. Deploy
+```
+gcloud app deploy app.yaml --quiet
+```
+Verifique logs:
+```
+gcloud app logs tail -s default
+```
+
+### 8. Hardening Pós-Sucesso
+Defina hosts/CSRF:
+```
+PANDORA_ALLOWED_HOSTS=meuapp.ue.r.appspot.com,www.seudominio.com
+PANDORA_CSRF_ORIGINS=https://meuapp.ue.r.appspot.com,https://www.seudominio.com
+```
+Ative cabeçalhos extras (HSTS, cookies) via variáveis já suportadas em `settings.py`.
+
+### 9. Problemas Comuns
+| Sintoma | Causa Provável | Ação |
+|--------|----------------|------|
+| connection refused | API Cloud SQL não habilitada / socket name incorreto | Confirmar `cloud_sql_instances` e APIs |
+| password auth failed | Senha não encode / senha errada | Atualizar `env.yaml` com URL-encoded |
+| Timeout inicial | DB ainda iniciando | Retry já cobre; aumentar `MIGRATION_MAX_RETRIES` se necessário |
+
+---
+
+## ☁️ Deploy no Cloud Run (Moderno)
+
+Nova abordagem (recomendada) usando build de imagem + Cloud Run:
+
+1. Provisionar/Postgres: `scripts/provision_cloudsql.ps1` (gera DATABASE_URL sugerida)
+2. Criar arquivo `deploy.env.yaml` a partir de `deploy.env.example.yaml` preenchendo segredos
+3. Executar: `scripts/deploy_fast.ps1 -EnvFile deploy.env.yaml`
+
+Entrypoint atual oferece duas opções de servidor ASGI:
+```
+USE_GUNICORN=1  -> Gunicorn + UvicornWorker (multi-worker CPU bound)
+USE_GUNICORN=0  -> Daphne (padrão; bom para websockets)
+```
+
+Variáveis de migração:
+```
+MIGRATION_MAX_RETRIES (default 1)
+MIGRATION_INITIAL_SLEEP_SECONDS (default 3)
+MIGRATION_BACKOFF_FACTOR (default 1.6)
+WAIT_FOR_CLOUDSQL=1 (aguarda socket Unix)
+```
+
+WhiteNoise (estáticos) é habilitado com `ENABLE_WHITENOISE=1` e os assets são coletados em build (imagem) reduzindo cold start.
+
+### Exemplo de `deploy.env.yaml`
+```
+DJANGO_SECRET_KEY: "<chave>"
+DJANGO_DEBUG: "False"
+DATABASE_URL: "postgres://pandora_user:XXXX@/pandora_app?host=/cloudsql/PROJETO:REGIAO:INSTANCIA"
+ENABLE_WHITENOISE: "1"
+MIGRATION_MAX_RETRIES: "10"
+WAIT_FOR_CLOUDSQL: "1"
+USE_GUNICORN: "0"
+```
+
+### Principais diferenças vs modelo App Engine
+| Item | App Engine | Cloud Run Moderno |
+|------|------------|-------------------|
+| Coleta estáticos | Runtime | Build-time (imagem) |
+| Migrações | Sem retry estruturado | Retry + backoff + espera socket |
+| Servidor | Gunicorn fixo | Daphne ou Gunicorn configurável |
+| Config Vars | env.yaml (blocagem) | YAML simples via `--env-vars-file` |
+| Proteção SQLite | Indireta | Bloqueio quando DEBUG=False sem DATABASE_URL |
+
+
+### 10. Próximos Melhoramentos
+- Mover segredos para Secret Manager (usando substituição em tempo de build ou fetch no startup).
+- Configurar VPC Serverless Connector (se precisar acessar recursos privados).
+- Adicionar monitoramento (Cloud Monitoring dashboards / alertas de erro).
+
+---
+
 ## 🌟 Características do Sistema
 
 - ✅ **Multi-tenant**: Cada empresa isolada

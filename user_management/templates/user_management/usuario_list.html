@@ -86,19 +86,25 @@
                     {% endif %}
                 </td>
                 <td class="col-tipo text-center">
-                    {% if usuario.user.is_superuser %}
-                        <span class="badge badge-ultra-modern badge-type-compact badge-type-admin">
-                            <i class="fas fa-crown"></i> Super
-                        </span>
-                    {% elif usuario.user.is_staff %}
-                        <span class="badge badge-ultra-modern badge-type-compact badge-type-staff">
-                            <i class="fas fa-user-cog"></i> Staff
-                        </span>
-                    {% else %}
-                        <span class="badge badge-ultra-modern badge-type-compact badge-type-user">
-                            <i class="fas fa-user"></i> Comum
-                        </span>
-                    {% endif %}
+                    {% with tipo=usuario.tipo_usuario %}
+                        {% if usuario.user.is_superuser or tipo == 'super_admin' %}
+                            <span class="badge badge-ultra-modern badge-type-compact badge-type-admin">
+                                <i class="fas fa-crown"></i> Super Admin
+                            </span>
+                        {% elif usuario.is_tenant_admin or tipo == 'admin_empresa' %}
+                            <span class="badge badge-ultra-modern badge-type-compact badge-type-staff">
+                                <i class="fas fa-user-cog"></i> Administrador
+                            </span>
+                        {% elif usuario.user.is_staff %}
+                            <span class="badge badge-ultra-modern badge-type-compact badge-type-staff">
+                                <i class="fas fa-user-cog"></i> Staff
+                            </span>
+                        {% else %}
+                            <span class="badge badge-ultra-modern badge-type-compact badge-type-user">
+                                <i class="fas fa-user"></i> {{ usuario.get_tipo_usuario_display|default:"Comum" }}
+                            </span>
+                        {% endif %}
+                    {% endwith %}
                 </td>
                 <td class="col-ultimo-login text-center">
                     <div class="text-xs">
@@ -124,7 +130,9 @@
                         <a href="{% url 'user_management:usuario_update' usuario.pk %}" class="btn btn-outline-primary btn-sm" title="Editar">
                             <i class="fas fa-edit"></i>
                         </a>
-                        {% comment %}Botão de permissões - implementar futuramente{% endcomment %}
+                        <a href="{% url 'user_management:permissao_create' %}?user={{ usuario.user.id }}" class="btn btn-outline-secondary btn-sm" title="Permissões">
+                            <i class="fas fa-key"></i>
+                        </a>
                         {% if usuario.user.is_active %}
                         <button type="button" class="btn btn-outline-warning btn-sm" title="Desativar Usuário" onclick="toggleUserStatus({{ usuario.pk }}, false)">
                             <i class="fas fa-user-times"></i>

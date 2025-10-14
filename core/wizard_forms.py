@@ -4,7 +4,7 @@ Este módulo contém os formulários e widgets usados nas etapas do wizard.
 """
 
 # core/wizard_forms.py - Formulários do Wizard de Criação de Tenant (VERSÃO INDEPENDENTE)
-import json
+import json  # noqa: I001 (ordenado manualmente para manter agrupamentos lógicos)
 import re
 from collections.abc import Mapping, Sequence
 from datetime import date, datetime
@@ -23,6 +23,12 @@ from django.utils.safestring import mark_safe
 from django.utils.translation import gettext_lazy as _
 
 from core.models import Tenant
+from core.module_registry import (
+    MODULE_DEFINITIONS as MODULE_REGISTRY_DEFS,
+    annotate_modules_for_ui,
+    compute_initial_modules,
+    group_ui_catalog,
+)
 from core.validators import RESERVED_SUBDOMAINS, SUBDOMAIN_REGEX, normalize_subdomain
 
 if TYPE_CHECKING:  # Tipagem apenas; evita ImportError em runtime no Django 5+
@@ -919,282 +925,13 @@ class TenantContactsWizardForm(forms.ModelForm):
 
 
 class TenantConfigurationWizardForm(EditingTenantMixin, forms.ModelForm):
-    """STEP 5: Configurações & Módulos."""
+    """STEP 5: Configurações & Módulos.
 
-    # Definição completa dos módulos disponíveis (igual ao forms.py)
-    AVAILABLE_MODULES: ClassVar[dict[str, dict[str, object]]] = {
-        # Módulos Básicos de Gestão
-        "clientes": {
-            "name": "Clientes",
-            "description": "Gestão completa de clientes, contratos e relacionamentos",
-            "category": "Gestão Básica",
-            "premium": False,
-        },
-        "fornecedores": {
-            "name": "Fornecedores",
-            "description": "Cadastro e gestão de fornecedores e parcerias",
-            "category": "Gestão Básica",
-            "premium": False,
-        },
-        "produtos": {
-            "name": "Produtos",
-            "description": "Catálogo de produtos, preços e especificações",
-            "category": "Gestão Básica",
-            "premium": False,
-        },
-        "servicos": {
-            "name": "Serviços",
-            "description": "Gestão de serviços oferecidos pela empresa",
-            "category": "Gestão Básica",
-            "premium": False,
-        },
-        "funcionarios": {
-            "name": "Funcionários",
-            "description": "Gestão de recursos humanos e colaboradores",
-            "category": "Gestão Básica",
-            "premium": False,
-        },
-        "cadastros_gerais": {
-            "name": "Cadastros Gerais",
-            "description": "Cadastros auxiliares e configurações gerais",
-            "category": "Gestão Básica",
-            "premium": False,
-        },
-        # Módulos de Obras e Projetos
-        "obras": {
-            "name": "Obras",
-            "description": "Gestão completa de obras e projetos de construção",
-            "category": "Obras e Projetos",
-            "premium": False,
-        },
-        "orcamentos": {
-            "name": "Orçamentos",
-            "description": "Criação e gestão de orçamentos detalhados",
-            "category": "Obras e Projetos",
-            "premium": False,
-        },
-        "quantificacao_obras": {
-            "name": "Quantificação de Obras",
-            "description": "Cálculos e quantificações para projetos",
-            "category": "Obras e Projetos",
-            "premium": True,
-        },
-        "apropriacao": {
-            "name": "Apropriação",
-            "description": "Apropriação de custos e controle de obras",
-            "category": "Obras e Projetos",
-            "premium": True,
-        },
-        "mao_obra": {
-            "name": "Mão de Obra",
-            "description": "Gestão de equipes e mão de obra especializada",
-            "category": "Obras e Projetos",
-            "premium": False,
-        },
-        # Módulos Financeiros e Operacionais
-        "compras": {
-            "name": "Compras",
-            "description": "Sistema de compras, cotações e aquisições",
-            "category": "Financeiro e Operacional",
-            "premium": False,
-        },
-        "financeiro": {
-            "name": "Financeiro",
-            "description": "Controle financeiro completo da empresa",
-            "category": "Financeiro e Operacional",
-            "premium": False,
-        },
-        "estoque": {
-            "name": "Estoque",
-            "description": "Controle de estoque e movimentações",
-            "category": "Financeiro e Operacional",
-            "premium": False,
-        },
-        "aprovacoes": {
-            "name": "Aprovações",
-            "description": "Sistema de workflow e aprovações",
-            "category": "Financeiro e Operacional",
-            "premium": True,
-        },
-        # Módulos de Saúde e Clínicas
-        "prontuarios": {
-            "name": "Prontuários",
-            "description": "Prontuários médicos eletrônicos",
-            "category": "Saúde e Clínicas",
-            "premium": True,
-        },
-        "sst": {
-            "name": "SST",
-            "description": "Segurança e Saúde do Trabalho",
-            "category": "Saúde e Clínicas",
-            "premium": True,
-        },
-        # Módulos de Comunicação e Organização
-        "agenda": {
-            "name": "Agenda",
-            "description": "Agenda compartilhada e agendamentos",
-            "category": "Comunicação e Organização",
-            "premium": False,
-        },
-        "agendamentos": {
-            "name": "Agendamentos Avançados",
-            "description": "Regras e serviços de agendamento (módulo separado)",
-            "category": "Comunicação e Organização",
-            "premium": False,
-        },
-        "chat": {
-            "name": "Chat",
-            "description": "Chat interno em tempo real",
-            "category": "Comunicação e Organização",
-            "premium": True,
-        },
-        "notifications": {
-            "name": "Notificações",
-            "description": "Sistema de notificações e alertas",
-            "category": "Comunicação e Organização",
-            "premium": False,
-        },
-        # Módulos de Formulários e Documentação
-        "formularios": {
-            "name": "Formulários",
-            "description": "Formulários customizados para a empresa",
-            "category": "Formulários e Documentação",
-            "premium": False,
-        },
-        "formularios_dinamicos": {
-            "name": "Formulários Dinâmicos",
-            "description": "Criador avançado de formulários dinâmicos",
-            "category": "Formulários e Documentação",
-            "premium": True,
-        },
-        # Módulos de Capacitação e Gestão
-        "treinamento": {
-            "name": "Treinamentos",
-            "description": "Sistema de treinamentos e capacitação",
-            "category": "Capacitação e Gestão",
-            "premium": True,
-        },
-        "user_management": {
-            "name": "Gestão de Usuários",
-            "description": "Gestão avançada de usuários e permissões",
-            "category": "Capacitação e Gestão",
-            "premium": False,
-        },
-        # Módulos de Análise e Inteligência
-        "relatorios": {
-            "name": "Relatórios",
-            "description": "Sistema completo de relatórios",
-            "category": "Análise e Inteligência",
-            "premium": False,
-        },
-        "bi": {
-            "name": "Business Intelligence",
-            "description": "Dashboards e análises inteligentes",
-            "category": "Análise e Inteligência",
-            "premium": True,
-        },
-        "ai_auditor": {
-            "name": "Auditor IA",
-            "description": "Auditoria automatizada com inteligência artificial",
-            "category": "Análise e Inteligência",
-            "premium": True,
-        },
-        # Módulos Administrativos
-        "admin": {
-            "name": "Dashboard Admin",
-            "description": "Painel administrativo avançado",
-            "category": "Administrativo",
-            "premium": False,
-        },
-        # Portais e Assistentes
-        "portal_cliente": {
-            "name": "Portal do Cliente",
-            "description": "Acesso para clientes acompanharem informações e interações",
-            "category": "Portais Externos",
-            "premium": False,
-        },
-        "portal_fornecedor": {
-            "name": "Portal do Fornecedor",
-            "description": "Colaboração com fornecedores e cotações",
-            "category": "Portais Externos",
-            "premium": False,
-        },
-        "assistente_web": {
-            "name": "Assistente Web",
-            "description": "Assistente interativo de processos e IA contextual",
-            "category": "Suporte e Automação",
-            "premium": True,
-        },
-        "documentos": {
-            "name": "Documentos",
-            "description": "Gestão de documentos estruturados e regras",
-            "category": "Formulários e Documentação",
-            "premium": False,
-        },
-    }
+    Refatorado para consumir inteiramente o module_registry, eliminando
+    duplicação local de metadados (ícones, categorias, descrições, premium).
+    """
 
-    # Configuração visual dos módulos (ícones e cores)
-    MODULE_ICONS_AND_COLORS: ClassVar[dict[str, dict[str, object]]] = {
-        # Módulos Básicos de Gestão
-        "clientes": {"icon": "fas fa-users", "color": "text-primary", "category": "Gestão Básica"},
-        "fornecedores": {"icon": "fas fa-truck", "color": "text-info", "category": "Gestão Básica"},
-        "produtos": {"icon": "fas fa-box", "color": "text-success", "category": "Gestão Básica"},
-        "servicos": {"icon": "fas fa-tools", "color": "text-warning", "category": "Gestão Básica"},
-        "funcionarios": {"icon": "fas fa-id-badge", "color": "text-secondary", "category": "Gestão Básica"},
-        "cadastros_gerais": {"icon": "fas fa-database", "color": "text-dark", "category": "Gestão Básica"},
-        # Módulos de Obras e Projetos
-        "obras": {"icon": "fas fa-hard-hat", "color": "text-primary", "category": "Obras e Projetos"},
-        "orcamentos": {"icon": "fas fa-calculator", "color": "text-info", "category": "Obras e Projetos"},
-        "quantificacao_obras": {
-            "icon": "fas fa-ruler-combined",
-            "color": "text-success",
-            "category": "Obras e Projetos",
-        },
-        "apropriacao": {"icon": "fas fa-chart-pie", "color": "text-warning", "category": "Obras e Projetos"},
-        "mao_obra": {"icon": "fas fa-users-cog", "color": "text-secondary", "category": "Obras e Projetos"},
-        # Módulos Financeiros e Operacionais
-        "compras": {"icon": "fas fa-shopping-cart", "color": "text-success", "category": "Financeiro e Operacional"},
-        "financeiro": {"icon": "fas fa-dollar-sign", "color": "text-warning", "category": "Financeiro e Operacional"},
-        "estoque": {"icon": "fas fa-warehouse", "color": "text-secondary", "category": "Financeiro e Operacional"},
-        "aprovacoes": {"icon": "fas fa-check-circle", "color": "text-success", "category": "Financeiro e Operacional"},
-        # Módulos de Saúde e Clínicas
-        "prontuarios": {"icon": "fas fa-file-medical", "color": "text-danger", "category": "Saúde e Clínicas"},
-        "sst": {"icon": "fas fa-shield-alt", "color": "text-danger", "category": "Saúde e Clínicas"},
-        # Módulos de Comunicação e Organização
-        "agenda": {"icon": "fas fa-calendar", "color": "text-success", "category": "Comunicação e Organização"},
-        "agendamentos": {"icon": "fas fa-clock", "color": "text-success", "category": "Comunicação e Organização"},
-        "chat": {"icon": "fas fa-comments", "color": "text-warning", "category": "Comunicação e Organização"},
-        "notifications": {"icon": "fas fa-bell", "color": "text-info", "category": "Comunicação e Organização"},
-        # Módulos de Formulários e Documentação
-        "formularios": {"icon": "fas fa-file-alt", "color": "text-secondary", "category": "Formulários e Documentação"},
-        "formularios_dinamicos": {
-            "icon": "fas fa-magic",
-            "color": "text-purple",
-            "category": "Formulários e Documentação",
-        },
-        # Módulos de Capacitação e Gestão
-        "treinamento": {"icon": "fas fa-graduation-cap", "color": "text-info", "category": "Capacitação e Gestão"},
-        "user_management": {"icon": "fas fa-users-cog", "color": "text-dark", "category": "Capacitação e Gestão"},
-        # Módulos de Análise e Inteligência
-        "relatorios": {"icon": "fas fa-chart-bar", "color": "text-primary", "category": "Análise e Inteligência"},
-        "bi": {"icon": "fas fa-chart-line", "color": "text-info", "category": "Análise e Inteligência"},
-        "ai_auditor": {"icon": "fas fa-robot", "color": "text-success", "category": "Análise e Inteligência"},
-        # Módulos Administrativos
-        "admin": {"icon": "fas fa-tachometer-alt", "color": "text-dark", "category": "Administrativo"},
-        # Portais e Assistentes
-        "portal_cliente": {"icon": "fas fa-handshake", "color": "text-primary", "category": "Portais Externos"},
-        "portal_fornecedor": {"icon": "fas fa-people-carry", "color": "text-primary", "category": "Portais Externos"},
-        "assistente_web": {
-            "icon": "fas fa-assistive-listening-systems",
-            "color": "text-info",
-            "category": "Suporte e Automação",
-        },
-        "documentos": {
-            "icon": "fas fa-folder-open",
-            "color": "text-secondary",
-            "category": "Formulários e Documentação",
-        },
-    }
+    AVAILABLE_MODULES: ClassVar[dict[str, dict[str, object]]] = MODULE_REGISTRY_DEFS
 
     # choices serão montados dinamicamente em __init__ para incluir novos apps internos
     enabled_modules = forms.MultipleChoiceField(
@@ -1248,53 +985,47 @@ class TenantConfigurationWizardForm(EditingTenantMixin, forms.ModelForm):
         self._editing_tenant_pk = kwargs.pop("editing_tenant_pk", None)
         super().__init__(*args, **kwargs)
 
-        dynamic_choices = self._build_dynamic_choices()
-        self.fields["enabled_modules"].choices = dynamic_choices
-
-        self.module_catalog = self._build_module_catalog(dynamic_choices)
-
+        plan = getattr(self.instance, "plano_assinatura", "BASIC") or "BASIC"
+        # Módulos já marcados no instance (edição) ou vazio
+        existing: list[str] = []
+        raw_enabled = getattr(self.instance, "enabled_modules", None)
+        if isinstance(raw_enabled, dict):
+            existing = raw_enabled.get("modules") or []
+        # Lista inicial levando em conta plano e essenciais
+        initial_modules = compute_initial_modules(plan, existing)
+        annotated = annotate_modules_for_ui(plan, initial_modules)
+        grouped = group_ui_catalog(annotated)
+        # Choices simples para o campo (apenas códigos e rótulos)
+        self.fields["enabled_modules"].choices = [(m.key, m.label) for _, group in grouped for m in group]
+        # Inicial marcar conforme initial_modules
+        self.fields["enabled_modules"].initial = [m.key for m in annotated if m.key in initial_modules]
+        # Catálogo rico para template
+        self.module_catalog = [
+            (
+                category,
+                [
+                    {
+                        "key": m.key,
+                        "label": m.label,
+                        "description": m.description,
+                        "premium": m.premium,
+                        "icon": m.icon,
+                        "color": m.color,
+                        "is_default": m.is_default,
+                        "is_essential": m.is_essential,
+                        "locked": m.locked,
+                    }
+                    for m in modules
+                ],
+            )
+            for category, modules in grouped
+        ]
+        # Aplicar flag de bloqueio nos checkboxes (HTML) pós-render via template/JS
         self._apply_field_help()
 
-    def _build_dynamic_choices(self) -> list[tuple[str, str]]:
-        """Monta as choices para enabled_modules, com fallback robusto."""
-        dynamic_choices = self.discover_internal_modules() or []
-        if not dynamic_choices:
-            dynamic_choices = []
-            for k, v in self.AVAILABLE_MODULES.items():
-                label = str(v.get("name") or k)
-                dynamic_choices.append((k, label))
-            dynamic_choices.sort(key=lambda x: x[1])
-        return dynamic_choices
-
-    def _build_module_catalog(
-        self,
-        dynamic_choices: list[tuple[str, str]],
-    ) -> list[tuple[str, list[dict[str, object]]]]:
-        """Agrupa módulos por categoria e ordena para exibição no template."""
-        catalog: dict[str, list[dict[str, object]]] = {}
-        for key, label in dynamic_choices:
-            meta = self.AVAILABLE_MODULES.get(key, {})
-            icon_cfg = self.MODULE_ICONS_AND_COLORS.get(key, {})
-            category_str = str(meta.get("category") or icon_cfg.get("category") or "Outros")
-            if category_str not in catalog:
-                catalog[category_str] = []
-            catalog[category_str].append(
-                {
-                    "key": key,
-                    "label": label,
-                    "description": meta.get("description", ""),
-                    "premium": bool(meta.get("premium")),
-                    "icon": icon_cfg.get("icon", "fas fa-puzzle-piece"),
-                    "color": icon_cfg.get("color", "text-muted"),
-                },
-            )
-        for modules in catalog.values():
-            modules.sort(key=lambda m: str(m.get("label") or ""))
-        ordered: list[tuple[str, list[dict[str, object]]]] = []
-        if "Gestão Básica" in catalog:
-            ordered.append(("Gestão Básica", catalog.pop("Gestão Básica")))
-        ordered.extend((cat, catalog[cat]) for cat in sorted(catalog))
-        return ordered
+    # Métodos de descoberta dinâmica antiga removidos (duplicação). Mantidos nomes se referenciados externamente.
+    def _build_dynamic_choices(self) -> list[tuple[str, str]]:  # pragma: no cover - compat
+        return [(k, str(v.get("name") or k)) for k, v in self.AVAILABLE_MODULES.items()]
 
     def _apply_field_help(self) -> None:
         """Ajusta labels e help_text, além de atributos de widgets numéricos."""

@@ -7,6 +7,11 @@ __pycache__/
 build/
 develop-eggs/
 dist/
+!static/dist/
+!static/dist/css/
+!static/dist/js/
+!static/dist/css/pandora-ultra-modern.css
+!static/dist/js/pandora-ultra-modern.js
 downloads/
 eggs/
 .eggs/
@@ -132,6 +137,7 @@ Desktop.ini
 *.temp
 *.log
 procedimento_servico_map.json
+env.yaml
 
 # Arquivos de backup
 *.bak

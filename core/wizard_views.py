@@ -49,6 +49,7 @@ from django.views.generic import TemplateView
 
 from documentos.models import WizardTenantDocumentoTemp
 from documentos.services import consolidate_wizard_temp_to_documents
+from user_management.models import StatusUsuario  # ativação de perfis de admins criados
 
 from .models import (
     Contato,
@@ -254,27 +255,21 @@ class TenantCreationWizardView(LoginRequiredMixin, UserPassesTestMixin, Template
             cid = getattr(request, "_wizard_cid", None) or _uuid.uuid4().hex[:12]
             setattr(request, "_wizard_cid", cid)  # noqa: B010
 
-        # Salvaguarda: se estamos acessando a rota de criação (sem pk na URL)
-        # mas ainda existe um pk de edição na sessão, significa que o finish
-        # anterior não limpou corretamente OU o usuário abriu uma nova aba.
-        # Para evitar que o formulário de criação venha pré-preenchido com
-        # dados do tenant anterior, forçamos a limpeza seletiva aqui.
-        if "pk" not in kwargs:
+        # Salvaguarda ajustada: só limpar sessão ao acessar a rota de criação
+        # de forma explícita (GET com ?new=1). Isso evita apagar o contexto de
+        # edição quando o frontend (ou testes) utiliza a rota de criação como
+        # alias de POSTs durante um fluxo de EDIÇÃO.
+        if "pk" not in kwargs and request.method == "GET" and request.GET.get("new") == "1":
             sess = request.session
-            if sess.get("tenant_wizard_editing_pk"):
-                # Não apagar documentos temporários inadvertidamente se o usuário
-                # estiver no meio de outro fluxo; porém, neste caso específico
-                # o objetivo é iniciar um novo wizard limpo.
-                for key in [
-                    "tenant_wizard_editing_pk",
-                    "tenant_wizard_step",
-                    "tenant_wizard_data",
-                ]:
-                    sess.pop(key, None)
-                with contextlib.suppress(Exception):
-                    # Limpa também estruturas temporárias se existirem.
-                    self._clear_session_temp_documents()
-                sess.modified = True
+            for key in [
+                "tenant_wizard_editing_pk",
+                "tenant_wizard_step",
+                "tenant_wizard_data",
+            ]:
+                sess.pop(key, None)
+            with contextlib.suppress(Exception):
+                self._clear_session_temp_documents()
+            sess.modified = True
         response = super().dispatch(request, *args, **kwargs)
         with contextlib.suppress(Exception):
             if cid and "X-Wizard-Correlation-Id" not in getattr(response, "headers", {}):
@@ -522,13 +517,15 @@ class TenantCreationWizardView(LoginRequiredMixin, UserPassesTestMixin, Template
             tipo=map_tipo(item.get("tipo")),
             logradouro=logradouro,
             numero=numero,
-            complemento=(item.get("complemento") or "").strip() or None,
+            # CharField(blank=True, default=""): nunca persistir None
+            complemento=(item.get("complemento") or "").strip(),
             bairro=bairro,
             cidade=cidade,
             uf=uf,
             cep=cep,
             pais=pais,
-            ponto_referencia=(item.get("ponto_referencia") or "").strip() or None,
+            # CharField(blank=True, default=""): nunca persistir None
+            ponto_referencia=(item.get("ponto_referencia") or "").strip(),
             principal=bool(item.get("principal")),
         )
         return True
@@ -839,6 +836,19 @@ class TenantCreationWizardView(LoginRequiredMixin, UserPassesTestMixin, Template
         if _has_flag("admin_principal"):
             main_block["admin_principal"] = True
 
+        # Fallback: se nenhum admins_json válido foi enviado (JS falhou) mas campos unitários estiverem presentes,
+        # anexar ao main_block para permitir criação de um único admin. (Compatível com parse_admins_payload)
+        # Observação: só aplica se lista JSON está vazia ou '[]'.
+        try:
+            parsed = json.loads(admins_json) if admins_json else []
+        except Exception:  # noqa: BLE001
+            parsed = []
+        if (not parsed) and any(self.request.POST.get(k) for k in ("admin_email", "admin_nome", "admin_senha")):
+            for raw_key in ("admin_email", "admin_nome", "admin_senha", "admin_confirmar_senha", "admin_telefone"):
+                val = self.request.POST.get(raw_key)
+                if val:
+                    main_block[raw_key] = val
+
     def _augment_step_config_with_post(self, step_data: dict[str, Any]) -> None:
         """Acrescenta enabled_modules, subdomain e status a partir do POST (step 5)."""
         main_block = step_data.setdefault("main", {})
@@ -1145,11 +1155,11 @@ class TenantCreationWizardView(LoginRequiredMixin, UserPassesTestMixin, Template
             if isinstance(item, dict) and any(item.get(k) for k in ["nome", "email", "telefone"]):
                 Contato.objects.create(
                     tenant=tenant,
-                    nome=(item.get("nome") or "").strip()[:100] or None,
-                    email=(item.get("email") or "").strip()[:254] or None,
-                    telefone=(item.get("telefone") or "").strip()[:20] or None,
-                    cargo=(item.get("cargo") or "").strip()[:100] or None,
-                    observacao=(item.get("observacao") or "").strip()[:500] or None,
+                    nome=(item.get("nome") or "").strip()[:100],
+                    email=(item.get("email") or "").strip()[:254],
+                    telefone=(item.get("telefone") or "").strip()[:20],
+                    cargo=(item.get("cargo") or "").strip()[:100],
+                    observacao=(item.get("observacao") or "").strip()[:500],
                 )
 
     def _process_complete_contacts_data(
@@ -1376,6 +1386,18 @@ class TenantCreationWizardView(LoginRequiredMixin, UserPassesTestMixin, Template
             )
             if tenant_users_to_create:
                 TenantUser.objects.bulk_create(tenant_users_to_create, ignore_conflicts=True)
+            # Garantir que perfis de novos admins estejam ativos para permitir login imediato
+            for u in persisted_users:
+                perfil = getattr(u, "perfil_estendido", None)
+                if perfil and getattr(perfil, "status", None) == getattr(StatusUsuario, "PENDENTE", "pendente"):
+                    try:
+                        perfil.status = getattr(StatusUsuario, "ATIVO", "ativo")
+                        perfil.save(update_fields=["status", "atualizado_em"])
+                        if not u.is_active:
+                            u.is_active = True
+                            u.save(update_fields=["is_active"])
+                    except (ValueError, RuntimeError, OSError):  # pragma: no cover - best effort
+                        logger.warning("Falha ao ativar perfil de novo admin user_id=%s", u.pk)
         except IntegrityError:
             logger.exception("Erro de integridade durante o bulk create de admins ou associações.")
         except DatabaseError:
@@ -1383,6 +1405,18 @@ class TenantCreationWizardView(LoginRequiredMixin, UserPassesTestMixin, Template
         else:
             if send_welcome_email and welcome_queue:
                 self._send_welcome_queue(welcome_queue, from_email, label="novos")
+            # Também ativar perfis existentes atualizados que ainda estejam pendentes
+            for user in existing_users_map.values():
+                perfil = getattr(user, "perfil_estendido", None)
+                if perfil and getattr(perfil, "status", None) == getattr(StatusUsuario, "PENDENTE", "pendente"):
+                    try:
+                        perfil.status = getattr(StatusUsuario, "ATIVO", "ativo")
+                        perfil.save(update_fields=["status", "atualizado_em"])
+                        if not user.is_active:
+                            user.is_active = True
+                            user.save(update_fields=["is_active"])
+                    except (ValueError, RuntimeError, OSError):  # pragma: no cover
+                        logger.warning("Falha ao ativar perfil de admin existente user_id=%s", user.pk)
         finally:
             # Log de resumo (INFO) para auditoria leve
             # Usar blocos mínimos para não mascarar erros do fluxo principal
@@ -1744,6 +1778,11 @@ class TenantCreationWizardView(LoginRequiredMixin, UserPassesTestMixin, Template
             if not editing_pk:
                 with contextlib.suppress(Exception):
                     editing_pk = self.get_wizard_data().get("_editing_pk")
+            if not editing_pk:
+                # Fallback final: tentar extrair do kwargs (rota /<pk>/edit/)
+                with contextlib.suppress(Exception):
+                    raw_pk = self.kwargs.get("pk")
+                    editing_pk = int(raw_pk) if raw_pk is not None else None
             if editing_pk:
                 return _redirect_with_cid(self.request, "core:tenant_update", pk=editing_pk)
             # Sem pk de edição em sessão, tratar como criação, redirecionando para o início
@@ -1814,7 +1853,11 @@ class TenantCreationWizardView(LoginRequiredMixin, UserPassesTestMixin, Template
         # Consolidar documentos temporários (session_key) no tenant recém salvo
         with contextlib.suppress(Exception):
             session_key = self.request.session.session_key
-            consolidate_wizard_temp_to_documents(tenant, session_key=session_key, user=self.request.user)
+            # Ajuste estrito de tipagem: serviço aceita objeto com atributo 'pk';
+            # passamos o request.user autenticado ou None sem alterar lógica.
+            req_user = getattr(self.request, "user", None)
+            user_obj = req_user if (req_user is not None and getattr(req_user, "is_authenticated", False)) else None
+            consolidate_wizard_temp_to_documents(tenant, session_key=session_key, user=cast("Any", user_obj))
         self.clear_wizard_data()
         if self.is_editing():
             return _redirect_with_cid(self.request, "core:tenant_detail", pk=tenant.pk)
@@ -1860,6 +1903,10 @@ class TenantCreationWizardView(LoginRequiredMixin, UserPassesTestMixin, Template
         if not editing_pk:
             with contextlib.suppress(Exception):
                 editing_pk = self.get_wizard_data().get("_editing_pk")
+        if not editing_pk:
+            with contextlib.suppress(Exception):
+                raw_pk = self.kwargs.get("pk")
+                editing_pk = int(raw_pk) if raw_pk is not None else None
         if editing_pk:
             return _redirect_with_cid(self.request, "core:tenant_update", pk=editing_pk)
         # Caso contrário, retornar ao caminho atual (fluxo de criação)

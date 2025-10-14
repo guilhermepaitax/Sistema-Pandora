@@ -75,6 +75,10 @@ MODULE_EXEMPT_PATHS = [
     "/media/",
     "/dashboard/",
     "/quick-access/",
+    "/estoque/",
+    "/estoque",
+    "/notifications/",
+    "/notifications",
     "/user_management/convites/aceitar/",
     "/user-management/convites/aceitar/",
     "/cotacoes/portal/",
@@ -91,13 +95,14 @@ MODULE_URL_MAPPING = {
     "/compras/": "compras",
     "/apropriacao/": "apropriacao",
     "/financeiro/": "financeiro",
-    "/estoque/": "estoque",
+    # Estoque e Notifications: isentos de gating por padrão (legado/testes)
+    # Mantém acesso mesmo sem habilitação explícita de módulo.
+    # Para reativar gating, mover estas entradas para MODULE_URL_MAPPING e remover de MODULE_EXEMPT_PATHS.
     "/aprovacoes/": "aprovacoes",
     "/relatorios/": "relatorios",
     "/bi/": "bi",
     "/agenda/": "agenda",
     "/chat/": "chat",
-    "/notifications/": "notifications",
     "/formularios/": "formularios",
     "/sst/": "sst",
     "/treinamento/": "treinamento",

@@ -1,28 +1,35 @@
+"""Views de gerenciamento de usuários: perfis, 2FA, sessões e utilitários."""
+
 import contextlib
+import json
+import logging
+from datetime import datetime, timedelta
+from typing import Any, ClassVar, cast
 
 from django.conf import settings
 from django.contrib import messages
 from django.contrib.auth import get_user_model
 from django.contrib.auth.decorators import login_required
 from django.contrib.auth.mixins import LoginRequiredMixin
+from django.contrib.auth.models import Group, Permission
+from django.contrib.auth.views import PasswordChangeView
+from django.contrib.sessions.models import Session
 from django.core.cache import cache
 from django.core.mail import send_mail
-from django.db.models import Q
-from django.http import JsonResponse
+from django.db.models import Count, Exists, OuterRef, Q, QuerySet, Sum
+from django.forms import BaseModelForm
+from django.http import HttpRequest, HttpResponse, HttpResponseForbidden, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse, reverse_lazy
 from django.utils import timezone
 from django.utils.translation import gettext_lazy as _
 from django.views.generic import CreateView, DetailView, ListView, UpdateView, View
 
-from core.mixins import PageTitleMixin, SuperuserRequiredMixin, TenantAdminOrSuperuserMixin
+from core.mixins import PageTitleMixin, TenantAdminOrSuperuserMixin, TenantRequiredMixin
 from core.models import TenantUser
-
-# Importações de Mixins e Utils
 from core.utils import get_current_tenant
 from shared.mixins.ui_permissions import UIPermissionsMixin
-from user_management.services.logging_service import log_activity
-from user_management.twofa import RATE_MSG_GLOBAL_IP, RATE_MSG_LOCK, RATE_MSG_MICRO, global_ip_rate_limit_check
+from shared.services.permission_resolver import has_permission
 
 from .forms import (
     ConviteUsuarioForm,
@@ -42,12 +49,17 @@ from .models import (
 )
 from .realtime import broadcast_session_event
 from .risk import build_context_maps, compute_risks, session_to_dict
+from .services.logging_service import log_activity
 from .twofa import (
+    RATE_MSG_GLOBAL_IP,
+    RATE_MSG_LOCK,
+    RATE_MSG_MICRO,
     confirm_2fa,
     decrypt_secret,
     disable_2fa,
     encrypt_secret,
     generate_recovery_codes,
+    global_ip_rate_limit_check,
     hash_code,
     provision_uri,
     rate_limit_check,
@@ -58,16 +70,16 @@ from .twofa import (
 
 User = get_user_model()
 
+logger = logging.getLogger(__name__)
+
 # ==============================================================================
 # MIXINS LOCAIS PARA USER_MANAGEMENT
 # ==============================================================================
 
 
 @login_required
-def user_management_home(request):
-    """
-    View para o dashboard de Gerenciamento de Usuários, mostrando estatísticas e dados relevantes.
-    """
+def user_management_home(request: HttpRequest) -> HttpResponse:
+    """View para o dashboard de Gerenciamento de Usuários, mostrando estatísticas e dados relevantes."""
     template_name = "user_management/user_management_home.html"
     tenant = get_current_tenant(request)
 
@@ -90,8 +102,6 @@ def user_management_home(request):
         convites_pendentes = ConviteUsuario.objects.filter(usado=False, expirado_em__gte=timezone.now()).count()
 
         # Contar sessões ativas do Django
-        from django.contrib.sessions.models import Session
-
         sessoes_ativas = Session.objects.filter(expire_date__gte=timezone.now()).count()
 
     else:
@@ -113,12 +123,15 @@ def user_management_home(request):
 
         # Convites pendentes
         convites_pendentes = ConviteUsuario.objects.filter(
-            tenant=tenant, usado=False, expirado_em__gte=timezone.now()
+            tenant=tenant,
+            usado=False,
+            expirado_em__gte=timezone.now(),
         ).count()
 
         # Sessões ativas
         sessoes_ativas = SessaoUsuario.objects.filter(
-            ativa=True, user__in=tenant_users.values_list("user", flat=True)
+            ativa=True,
+            user__in=tenant_users.values_list("user", flat=True),
         ).count()
 
         # Se não há sessões específicas, usar uma estimativa baseada nos usuários
@@ -140,12 +153,15 @@ def user_management_home(request):
 
 
 class UserManagementFormMixin:
-    """
-    Mixin para injetar automaticamente `tenant` e `request_user` nos formulários.
-    """
+    """Mixin para injetar automaticamente `tenant` e `request_user` nos formulários."""
 
-    def get_form_kwargs(self):
-        kwargs = super().get_form_kwargs()
+    # Atributos providos por CBVs que usam este mixin
+    request: HttpRequest
+
+    def get_form_kwargs(self) -> dict[str, Any]:
+        """Inclui tenant e usuário do request nos kwargs do form."""
+        # cast para evitar alerta de método indefinido no super em mixins
+        kwargs = cast("Any", super()).get_form_kwargs()
         # O tenant é anexado ao request pelo TenantAdminOrSuperuserMixin
         kwargs["tenant"] = getattr(self.request, "tenant", None)
         kwargs["request_user"] = self.request.user
@@ -153,17 +169,21 @@ class UserManagementFormMixin:
 
 
 class LogActivityMixin:
-    """
-    Mixin para registrar logs de atividade para Create e Update.
-    """
+    """Mixin para registrar logs de atividade para Create e Update."""
+
+    # Atributos providos por CBVs que usam este mixin
+    request: HttpRequest
+    object: Any
 
     log_action_create = "CREATE"
     log_action_update = "UPDATE"
     log_model_name = ""
 
-    def form_valid(self, form):
-        response = super().form_valid(form)
-        is_create = self.object._state.adding
+    def form_valid(self, form: BaseModelForm) -> HttpResponse:
+        """Registra log após salvar a instância com sucesso."""
+        # evita acesso a membro privado `_state`; usa pk antes do save
+        is_create = form.instance.pk is None
+        response = cast("Any", super()).form_valid(form)
         action = self.log_action_create if is_create else self.log_action_update
 
         log_activity(
@@ -184,6 +204,8 @@ class LogActivityMixin:
 
 
 class UsuarioListView(TenantAdminOrSuperuserMixin, UIPermissionsMixin, PageTitleMixin, ListView):
+    """Lista perfis de usuários com filtros e respeito ao escopo de tenant."""
+
     model = PerfilUsuarioEstendido
     template_name = "user_management/usuario_list.html"
     context_object_name = "object_list"  # Alterado de 'perfis' para o padrão
@@ -192,44 +214,54 @@ class UsuarioListView(TenantAdminOrSuperuserMixin, UIPermissionsMixin, PageTitle
     app_label = "user_management"
     model_name = "perfilusuarioestendido"
 
-    def get_queryset(self):
-        queryset = PerfilUsuarioEstendido.objects.select_related("user").all()
+    def get_queryset(self) -> QuerySet:
+        """Retorna queryset filtrado por tenant e parâmetros de busca."""
+        tenant = getattr(self.request, "tenant", None)
+        queryset = PerfilUsuarioEstendido.objects.select_related("user")
+        admin_subquery = TenantUser.objects.filter(user_id=OuterRef("user_id"), is_tenant_admin=True)
+        if tenant:
+            admin_subquery = admin_subquery.filter(tenant_id=tenant.id)
+        queryset = queryset.annotate(is_tenant_admin=Exists(admin_subquery))
 
-        # Aplicar escopo de tenant
         if not self.request.user.is_superuser:
-            tenant = getattr(self.request, "tenant", None)
-            if tenant:
-                queryset = queryset.filter(user__tenant_memberships__tenant_id=tenant.id)
-            else:
+            if not tenant:
                 return queryset.none()
+            queryset = queryset.filter(user__tenant_memberships__tenant_id=tenant.id)
 
-        # Filtros (GET) utilizando FiltroUsuarioForm
-        self.filter_form = None
         self.filter_form = FiltroUsuarioForm(self.request.GET or None)
-        if self.filter_form.is_valid():
-            data = self.filter_form.cleaned_data
-            if data.get("busca"):
-                termo = data["busca"]
-                queryset = queryset.filter(
-                    Q(user__first_name__icontains=termo)
-                    | Q(user__last_name__icontains=termo)
-                    | Q(user__email__icontains=termo)
-                    | Q(cpf__icontains=termo)
-                )
-            if data.get("tipo_usuario"):
-                queryset = queryset.filter(tipo_usuario=data["tipo_usuario"])
-            if data.get("status"):
-                queryset = queryset.filter(status=data["status"])
-            if data.get("departamento"):
-                queryset = queryset.filter(departamento__icontains=data["departamento"])
-            if data.get("ativo") == "true":
-                queryset = queryset.filter(user__is_active=True)
-            elif data.get("ativo") == "false":
-                queryset = queryset.filter(user__is_active=False)
+        if not self.filter_form.is_valid():
+            return queryset
+
+        data = self.filter_form.cleaned_data
+        busca = data.get("busca")
+        if busca:
+            queryset = queryset.filter(
+                Q(user__first_name__icontains=busca)
+                | Q(user__last_name__icontains=busca)
+                | Q(user__email__icontains=busca)
+                | Q(cpf__icontains=busca),
+            )
+
+        tipo = data.get("tipo_usuario")
+        if tipo:
+            queryset = queryset.filter(tipo_usuario=tipo)
+
+        status = data.get("status")
+        if status:
+            queryset = queryset.filter(status=status)
+
+        departamento = data.get("departamento")
+        if departamento:
+            queryset = queryset.filter(departamento__icontains=departamento)
+
+        ativo = data.get("ativo")
+        if ativo in {"true", "false"}:
+            queryset = queryset.filter(user__is_active=(ativo == "true"))
 
         return queryset
 
-    def get_context_data(self, **kwargs):
+    def get_context_data(self, **kwargs: object) -> dict[str, Any]:
+        """Inclui o formulário de filtro no contexto."""
         context = super().get_context_data(**kwargs)
         # Incluir form de filtro no contexto
         context["filter_form"] = getattr(self, "filter_form", None)
@@ -237,13 +269,16 @@ class UsuarioListView(TenantAdminOrSuperuserMixin, UIPermissionsMixin, PageTitle
 
 
 class UsuarioDetailView(TenantAdminOrSuperuserMixin, UIPermissionsMixin, PageTitleMixin, DetailView):
+    """Exibe os detalhes de um perfil de usuário respeitando o escopo de tenant."""
+
     model = PerfilUsuarioEstendido
     template_name = "user_management/usuario_detail.html"
     context_object_name = "perfil"
     app_label = "user_management"
     model_name = "perfilusuarioestendido"
 
-    def get_queryset(self):
+    def get_queryset(self) -> QuerySet:
+        """Aplica restrição por tenant para usuários não superusuários."""
         qs = super().get_queryset()
 
         # Superusuário pode ver qualquer perfil, independentemente do tenant selecionado.
@@ -258,7 +293,8 @@ class UsuarioDetailView(TenantAdminOrSuperuserMixin, UIPermissionsMixin, PageTit
         # Se não for superuser e não tiver tenant, não pode ver ninguém.
         return qs.none()
 
-    def get_context_data(self, **kwargs):
+    def get_context_data(self, **kwargs: object) -> dict[str, Any]:
+        """Fornece dados adicionais como sessões ativas e permissões do usuário."""
         context = super().get_context_data(**kwargs)
         self.page_title = f"Detalhes de {self.object.user.get_full_name()}"
         context["sessoes_ativas"] = SessaoUsuario.objects.filter(user=self.object.user, ativa=True)
@@ -272,9 +308,9 @@ class UsuarioDetailView(TenantAdminOrSuperuserMixin, UIPermissionsMixin, PageTit
         elif tu_qs.count() != 1:
             tu_qs = tu_qs.none()
         if tu_qs.exists():
-            from django.urls import reverse
-
-            context["reset_password_url"] = reverse("core:tenant_user_reset_password", args=[tu_qs.first().pk])
+            tu = tu_qs.first()
+            if tu is not None:
+                context["reset_password_url"] = reverse("core:tenant_user_reset_password", args=[tu.pk])
         return context
 
 
@@ -286,6 +322,8 @@ class UsuarioCreateView(
     PageTitleMixin,
     CreateView,
 ):
+    """Cria um novo usuário e seu perfil associado."""
+
     model = User  # O form cria o User e o Perfil
     form_class = UsuarioCreateForm
     template_name = "user_management/usuario_form.html"
@@ -295,9 +333,17 @@ class UsuarioCreateView(
     app_label = "user_management"
     model_name = "perfilusuarioestendido"
 
-    def form_valid(self, form):
+    def form_valid(self, form: BaseModelForm) -> HttpResponse:
+        """Exibe mensagem de sucesso e redireciona conforme intenção (permissões ou lista)."""
+        response = super().form_valid(form)
         messages.success(self.request, f"Usuário {form.instance.username} criado com sucesso!")
-        return super().form_valid(form)
+        # Se o usuário clicou em "Salvar e configurar permissões", redirecionar para permissões personalizadas
+        if self.request.POST.get("next") == "permissoes" and hasattr(self.object, "user"):
+            user_id = getattr(self.object.user, "id", None)
+            if user_id:
+                url = f"{reverse('user_management:permissao_create')}?user={user_id}"
+                return redirect(url)
+        return response
 
 
 class UsuarioUpdateView(
@@ -308,6 +354,8 @@ class UsuarioUpdateView(
     PageTitleMixin,
     UpdateView,
 ):
+    """Atualiza os dados do perfil de um usuário existente."""
+
     model = PerfilUsuarioEstendido
     form_class = UsuarioUpdateForm
     template_name = "user_management/usuario_form.html"
@@ -316,7 +364,8 @@ class UsuarioUpdateView(
     app_label = "user_management"
     model_name = "perfilusuarioestendido"
 
-    def get_queryset(self):
+    def get_queryset(self) -> QuerySet:
+        """Restringe o queryset ao tenant do request quando aplicável."""
         qs = super().get_queryset()
 
         # Superusuário pode editar qualquer perfil, independentemente do tenant selecionado.
@@ -331,14 +380,17 @@ class UsuarioUpdateView(
         # Se não for superuser e não tiver tenant, não pode editar ninguém.
         return qs.none()
 
-    def get_page_title(self):
+    def get_page_title(self) -> str:
+        """Retorna o título da página para edição de usuário."""
         return f"Editar Usuário: {self.object.user.username}"
 
-    def form_valid(self, form):
+    def form_valid(self, form: BaseModelForm) -> HttpResponse:
+        """Exibe mensagem de sucesso após atualizar o usuário."""
         messages.success(self.request, f"Usuário {self.object.user.username} atualizado com sucesso!")
         return super().form_valid(form)
 
-    def get_context_data(self, **kwargs):
+    def get_context_data(self, **kwargs: object) -> dict[str, Any]:
+        """Inclui URL para reset de senha se aplicável."""
         context = super().get_context_data(**kwargs)
         # Reset de senha: só expor se houver TenantUser inequívoco
         tenant = getattr(self.request, "tenant", None)
@@ -348,9 +400,9 @@ class UsuarioUpdateView(
         elif tu_qs.count() != 1:
             tu_qs = tu_qs.none()
         if tu_qs.exists():
-            from django.urls import reverse
-
-            context["reset_password_url"] = reverse("core:tenant_user_reset_password", args=[tu_qs.first().pk])
+            tu = tu_qs.first()
+            if tu is not None:
+                context["reset_password_url"] = reverse("core:tenant_user_reset_password", args=[tu.pk])
         return context
 
 
@@ -360,13 +412,16 @@ class UsuarioUpdateView(
 
 
 class ConviteListView(TenantAdminOrSuperuserMixin, PageTitleMixin, ListView):
+    """Lista convites com escopo por tenant (ou global para superusuário)."""
+
     model = ConviteUsuario
     template_name = "user_management/convite_list.html"
     context_object_name = "convites"
     paginate_by = 25
     page_title = "Gerenciamento de Convites"
 
-    def get_queryset(self):
+    def get_queryset(self) -> QuerySet:
+        """Aplica filtros por tenant e parâmetros de querystring."""
         queryset = super().get_queryset().select_related("enviado_por", "usuario_criado", "tenant")
 
         # Superusuário pode ver todos os convites. O tenant selecionado é apenas um filtro.
@@ -389,20 +444,23 @@ class ConviteListView(TenantAdminOrSuperuserMixin, PageTitleMixin, ListView):
 
 
 class ConviteCreateView(TenantAdminOrSuperuserMixin, UserManagementFormMixin, PageTitleMixin, CreateView):
+    """Cria e envia convites para usuários."""
+
     model = ConviteUsuario
     form_class = ConviteUsuarioForm
     template_name = "user_management/convite_form.html"
     success_url = reverse_lazy("user_management:convite_list")
     page_title = "Enviar Novo Convite"
 
-    def form_valid(self, form):
+    def form_valid(self, form: BaseModelForm) -> HttpResponse:
+        """Salva convite e tenta enviar e-mail de notificação."""
         # O tenant e o enviado_por já são setados no form
         convite = form.save()
 
         # Envio de e-mail do convite
         try:
             link_convite = self.request.build_absolute_uri(
-                reverse("user_management:aceitar_convite", kwargs={"token": convite.token})
+                reverse("user_management:aceitar_convite", kwargs={"token": convite.token}),
             )
             assunto = f"Convite para acessar o sistema {getattr(settings, 'SITE_NAME', 'Pandora ERP')}"
             mensagem = f"""
@@ -428,7 +486,7 @@ Atenciosamente,
                 fail_silently=False,
             )
             messages.success(self.request, f"Convite enviado para {convite.email} com sucesso!")
-        except Exception as e:  # pragma: no cover - caminho de erro de infraestrutura
+        except Exception as e:  # pragma: no cover - caminho de erro de infraestrutura  # noqa: BLE001
             messages.warning(self.request, f"Convite criado, mas erro ao enviar e-mail: {e}")
 
         # Log
@@ -445,27 +503,32 @@ Atenciosamente,
 
 
 class AceitarConviteView(PageTitleMixin, CreateView):
+    """Fluxo de aceite de convite, criando o usuário final a partir do token."""
+
     template_name = "user_management/aceitar_convite.html"
     form_class = UsuarioCreateForm
     # Após criação redireciona para login (PRG p/ evitar repost)
     success_url = reverse_lazy("core:login")
     page_title = "Aceitar Convite"
 
-    def dispatch(self, request, *args, **kwargs):
+    def dispatch(self, request: HttpRequest, *args: object, **kwargs: object) -> HttpResponse:
+        """Valida o convite antes de prosseguir."""
         self.convite = get_object_or_404(ConviteUsuario, token=self.kwargs.get("token"))
         if not self.convite.pode_ser_usado:
             messages.error(request, "Este convite não é mais válido.")
             return redirect("core:login")
         return super().dispatch(request, *args, **kwargs)
 
-    def get_initial(self):
+    def get_initial(self) -> dict[str, Any]:
+        """Pré-preenche campos com dados do convite."""
         initial = super().get_initial()
         initial["email"] = self.convite.email
         initial["tipo_usuario"] = self.convite.tipo_usuario
         # ... (outros campos pré-preenchidos) ...
         return initial
 
-    def get_form(self, form_class=None):
+    def get_form(self, form_class: type[UsuarioCreateForm] | None = None) -> BaseModelForm:
+        """Retorna formulário com campos travados conforme convite."""
         form = super().get_form(form_class)
         form.fields["email"].widget.attrs["readonly"] = True
         form.fields["tipo_usuario"].widget.attrs["readonly"] = True
@@ -476,21 +539,21 @@ class AceitarConviteView(PageTitleMixin, CreateView):
             form.fields["last_name"].required = False
         return form
 
-    def get_form_kwargs(self):
+    def get_form_kwargs(self) -> dict[str, Any]:
+        """Inclui contexto de tenant e marca request_user como externo."""
         kwargs = super().get_form_kwargs()
         # Fornece contexto necessário para o form salvar Perfil corretamente
         kwargs["request_user"] = None  # convite externo (sem usuário autenticado)
         kwargs["tenant"] = getattr(self.convite, "tenant", None)
         return kwargs
 
-    def form_valid(self, form):
+    def form_valid(self, form: UsuarioCreateForm) -> HttpResponse:
+        """Garante tipo do convite e associa user ao tenant antes de salvar."""
         # Força tipo_usuario do convite (ignora alteração maliciosa em POST)
         form.cleaned_data["tipo_usuario"] = self.convite.tipo_usuario
         user = form.save()
         # Associa usuário ao tenant do convite
         if self.convite.tenant:
-            from core.models import TenantUser
-
             TenantUser.objects.get_or_create(user=user, tenant=self.convite.tenant)
 
         # Atualiza convite
@@ -515,8 +578,9 @@ class AceitarConviteView(PageTitleMixin, CreateView):
         messages.success(self.request, "Conta criada com sucesso! Você já pode fazer login.")
         return super().form_valid(form)
 
-    def get_context_data(self, **kwargs):
-        ctx = super().get_context_data(**kwargs)
+    def get_context_data(self, **kwargs: object) -> dict[str, Any]:
+        """Disponibiliza o convite no contexto do template."""
+        ctx: dict[str, Any] = super().get_context_data(**kwargs)
         # Disponibiliza o objeto convite para o template (necessário para blocos informativos)
         ctx["convite"] = getattr(self, "convite", None)
         return ctx
@@ -528,28 +592,52 @@ class AceitarConviteView(PageTitleMixin, CreateView):
 
 
 class PermissionRequiredMixin:
-    required_modulo = None
-    required_acao = None
-    required_recurso = None
-    permission_scope_tenant = True  # se True tenta usar request.tenant.id
+    """Mixin simples para validar permissão usando o permission_resolver."""
 
-    def dispatch(self, request, *args, **kwargs):
+    required_modulo: ClassVar[str | None] = None
+    required_acao: ClassVar[str | None] = None
+    required_recurso: ClassVar[str | None] = None
+    # se True tenta usar request.tenant.id
+    permission_scope_tenant: ClassVar[bool] = True
+
+    def dispatch(self, request: HttpRequest, *args: object, **kwargs: object) -> HttpResponse:
+        """Valida a permissão antes de despachar a requisição.
+
+        Regras:
+        - Superusuário sempre permitido.
+        - Administrador do tenant (TenantUser.is_tenant_admin) também tem acesso básico.
+        - Caso contrário, usa o permission_resolver para decidir.
+        """
+        # Bypass para superusuário
+        if getattr(request.user, "is_superuser", False):
+            return cast("Any", super()).dispatch(request, *args, **kwargs)
+
+        # Contexto de tenant
+        tenant = getattr(request, "tenant", None) if self.permission_scope_tenant else None
+        if tenant is None and self.permission_scope_tenant:
+            # Sem tenant ativo, negar de forma consistente
+            return HttpResponseForbidden("Permissão negada: tenant ausente")
+
+        # Admin do tenant possui acesso às telas de permissão do próprio tenant
+        try:
+            is_admin = TenantUser.objects.filter(tenant=tenant, user=request.user, is_tenant_admin=True).exists()
+        except TenantUser.DoesNotExist:  # pragma: no cover - defensivo
+            is_admin = False
+
+        if is_admin:
+            return cast("Any", super()).dispatch(request, *args, **kwargs)
+
         if self.required_modulo and self.required_acao:
-            # Uso do resolver unificado (modernizado). Ação canônica: ACAO_MODULO em UPPER.
-            from shared.services.permission_resolver import has_permission  # import local p/ evitar ciclo em cold start
-
-            tenant = None
-            if self.permission_scope_tenant:
-                tenant = getattr(request, "tenant", None)
             action = f"{self.required_acao}_{self.required_modulo}".upper()
-            if not (tenant and has_permission(request.user, tenant, action, self.required_recurso)):
-                from django.http import HttpResponseForbidden
-
+            if not has_permission(request.user, tenant, action, self.required_recurso):
                 return HttpResponseForbidden("Permissão negada")
-        return super().dispatch(request, *args, **kwargs)
+        # Em mixins, o analisador pode não inferir 'dispatch' no super. O cast resolve o alerta de tipo.
+        return cast("Any", super()).dispatch(request, *args, **kwargs)
 
 
-class PermissaoListView(SuperuserRequiredMixin, PermissionRequiredMixin, PageTitleMixin, ListView):
+class PermissaoListView(TenantRequiredMixin, PermissionRequiredMixin, PageTitleMixin, ListView):
+    """Lista permissões personalizadas com paginação e checagem de permissão."""
+
     model = PermissaoPersonalizada
     template_name = "user_management/permissao_list.html"
     context_object_name = "permissoes"
@@ -558,15 +646,62 @@ class PermissaoListView(SuperuserRequiredMixin, PermissionRequiredMixin, PageTit
     required_modulo = "user_management"
     required_acao = "view_permissions"
 
+    def get_queryset(self) -> QuerySet:
+        """Filtra permissões personalizadas pelo tenant atual e otimiza relacionamentos."""
+        queryset = super().get_queryset().select_related("user", "scope_tenant")
+        tenant = getattr(self.request, "tenant", None)
+        if tenant:
+            queryset = queryset.filter(scope_tenant=tenant)
+        return queryset
+
+    def get_context_data(self, **kwargs: object) -> dict[str, Any]:
+        """Enriquece o contexto com grupos e permissões padrão do Django."""
+        context = super().get_context_data(**kwargs)
+
+        permissions_qs = Permission.objects.select_related("content_type").order_by(
+            "content_type__app_label",
+            "codename",
+        )
+
+        # Segurança: oculta permissões do módulo 'core' para não-superusuários
+        user = getattr(self.request, "user", None)
+        if not (user and getattr(user, "is_superuser", False)):
+            permissions_qs = permissions_qs.exclude(content_type__app_label="core")
+        groups_qs = Group.objects.prefetch_related("permissions", "user_set").order_by("name")
+
+        group_app_counts: dict[int, dict[str, int]] = {}
+        for group in groups_qs:
+            counts: dict[str, int] = {}
+            for permission in group.permissions.all():
+                app_label = getattr(permission.content_type, "app_label", None)
+                if not app_label:
+                    continue
+                # Não expõe 'core' para não-superusuários
+                if not (user and getattr(user, "is_superuser", False)) and app_label == "core":
+                    continue
+                counts[app_label] = counts.get(app_label, 0) + 1
+            group_app_counts[group.id] = counts
+
+        context.update(
+            {
+                "permissions": permissions_qs,
+                "groups": list(groups_qs),
+                "group_app_counts": group_app_counts,
+            },
+        )
+        return context
+
 
 class PermissaoCreateView(
-    SuperuserRequiredMixin,
+    TenantRequiredMixin,
     PermissionRequiredMixin,
     UserManagementFormMixin,
     LogActivityMixin,
     PageTitleMixin,
     CreateView,
 ):
+    """Concede uma permissão personalizada para um usuário/escopo de tenant."""
+
     model = PermissaoPersonalizada
     form_class = PermissaoPersonalizadaForm
     template_name = "user_management/permissao_form.html"
@@ -576,9 +711,37 @@ class PermissaoCreateView(
     required_modulo = "user_management"
     required_acao = "create_permission"
 
-    def form_valid(self, form):
+    def form_valid(self, form: BaseModelForm) -> HttpResponse:
+        """Exibe feedback positivo e prossegue com a criação da permissão."""
         messages.success(self.request, "Permissão concedida com sucesso!")
         return super().form_valid(form)
+
+    def get_form_kwargs(self) -> dict[str, Any]:
+        """Injeta tenant atual no form para limitar o escopo."""
+        kwargs = super().get_form_kwargs()
+        # injeta tenant no form para filtrar escopo
+        kwargs["tenant"] = getattr(self.request, "tenant", None)
+        return kwargs
+
+    def get_initial(self) -> dict[str, Any]:
+        """Pré-preenche usuário e tenant no formulário quando fornecidos por query string."""
+        initial = super().get_initial()
+        user_id = self.request.GET.get("user")
+        if user_id:
+            tenant = getattr(self.request, "tenant", None)
+            with contextlib.suppress(Exception):
+                uid = int(user_id)
+                # Busca o usuário e garante vínculo com tenant quando aplicável
+                target = User.objects.get(pk=uid)
+                if tenant:
+                    if TenantUser.objects.filter(tenant=tenant, user=target).exists():
+                        initial["user"] = target
+                else:
+                    initial["user"] = target
+        tenant = getattr(self.request, "tenant", None)
+        if tenant:
+            initial["scope_tenant"] = tenant
+        return initial
 
 
 # ==============================================================================
@@ -587,16 +750,19 @@ class PermissaoCreateView(
 
 
 class LogAtividadeListView(TenantAdminOrSuperuserMixin, PermissionRequiredMixin, PageTitleMixin, ListView):
+    """Lista de logs de atividade de usuários, com escopo por tenant quando aplicável."""
+
     model = LogAtividadeUsuario
     template_name = "user_management/atividade_list.html"
     context_object_name = "atividades"
     paginate_by = 50
     page_title = "Logs de Atividade dos Usuários"
-    ordering = ["-timestamp"]
+    ordering = ("-timestamp",)
     required_modulo = "auditoria"
     required_acao = "view_logs"
 
-    def get_queryset(self):
+    def get_queryset(self) -> QuerySet:
+        """Retorna queryset filtrado por tenant atual ou por parâmetro (superusuário)."""
         queryset = super().get_queryset().select_related("user")
 
         if self.request.user.is_superuser:
@@ -617,16 +783,19 @@ class LogAtividadeListView(TenantAdminOrSuperuserMixin, PermissionRequiredMixin,
 
 
 class SessaoUsuarioListView(TenantAdminOrSuperuserMixin, PermissionRequiredMixin, PageTitleMixin, ListView):
+    """Lista sessões de usuários ativas, com escopo por tenant e paginação."""
+
     model = SessaoUsuario
     template_name = "user_management/sessao_list.html"
     context_object_name = "sessoes"
     paginate_by = 50
     page_title = "Sessões de Usuários Ativas"
-    ordering = ["-criada_em"]  # Corrigido de 'inicio_sessao' para 'criada_em'
+    ordering = ("-criada_em",)  # Corrigido de 'inicio_sessao' para 'criada_em'
     required_modulo = "user_management"
     required_acao = "view_sessions"
 
-    def get_queryset(self):
+    def get_queryset(self) -> QuerySet:
+        """Retorna queryset de sessões ativas, filtradas por tenant quando necessário."""
         queryset = super().get_queryset().filter(ativa=True).select_related("user")
 
         if self.request.user.is_superuser:
@@ -648,7 +817,8 @@ class SessaoUsuarioListView(TenantAdminOrSuperuserMixin, PermissionRequiredMixin
 class SessaoEncerrarView(LoginRequiredMixin, View):
     """Encerra (marca como inativa) uma sessão específica (própria ou qualquer se superuser)."""
 
-    def post(self, request, pk):
+    def post(self, request: HttpRequest, pk: int) -> HttpResponse:
+        """Encerra uma sessão específica se houver permissão."""
         sessao = get_object_or_404(SessaoUsuario, pk=pk)
         if not request.user.is_superuser and sessao.user != request.user:
             return JsonResponse({"detail": "Sem permissão."}, status=403)
@@ -673,7 +843,8 @@ class SessaoEncerrarView(LoginRequiredMixin, View):
 class SessaoEncerrarTodasView(LoginRequiredMixin, View):
     """Encerra todas as sessões ativas de um usuário (próprio usuário ou qualquer se superuser)."""
 
-    def post(self, request, user_id):
+    def post(self, request: HttpRequest, user_id: int) -> HttpResponse:
+        """Encerra todas as sessões ativas do usuário alvo."""
         alvo = get_object_or_404(User, pk=user_id)
         if not request.user.is_superuser and alvo != request.user:
             return JsonResponse({"detail": "Sem permissão."}, status=403)
@@ -703,9 +874,10 @@ class SessaoEncerrarTodasView(LoginRequiredMixin, View):
 class SessaoDetalheView(LoginRequiredMixin, View):
     """Retorna detalhes de uma sessão (JSON)."""
 
-    def get(self, request, pk):
+    def get(self, request: HttpRequest, pk: int) -> JsonResponse:
+        """Retorna os detalhes de uma sessão, se autorizado."""
         sessao = get_object_or_404(SessaoUsuario, pk=pk)
-        # Autorizações: superuser ou dono da sessão (futuramente: tenant admin do mesmo tenant caso relacionamento exista)
+        # Autorizações: superuser ou dono da sessão (futuro: tenant admin do mesmo tenant)
         if not request.user.is_superuser and sessao.user != request.user:
             return JsonResponse({"detail": "Sem permissão."}, status=403)
         data = {
@@ -726,7 +898,10 @@ class SessaoDetalheView(LoginRequiredMixin, View):
 
 
 class TwoFASetupView(LoginRequiredMixin, View):
-    def post(self, request):
+    """Inicia a configuração de 2FA do usuário atual."""
+
+    def post(self, request: HttpRequest) -> JsonResponse:
+        """Inicia configuração do 2FA e retorna secret, URI e recovery codes."""
         perfil = request.user.perfil_estendido
         # Se já confirmado e ativo, não re-expor códigos nem gerar novo secret.
         if perfil.autenticacao_dois_fatores and perfil.totp_secret and perfil.totp_confirmed_at:
@@ -734,9 +909,10 @@ class TwoFASetupView(LoginRequiredMixin, View):
         secret, raw_codes = setup_2fa(perfil)
         # Salvaguarda: garantir que recovery codes seja sempre lista
         if not isinstance(raw_codes, list):
-            try:
+            # Broad suppress é aceitável aqui: transformação defensiva de tipos vindos do provider.
+            with contextlib.suppress(Exception):
                 raw_codes = list(raw_codes) if raw_codes is not None else []
-            except Exception:
+            if not isinstance(raw_codes, list):
                 raw_codes = []
         # Nunca retornar None para evitar falha em testes/clientes
         raw_codes = raw_codes or []
@@ -758,8 +934,6 @@ class TwoFASetupView(LoginRequiredMixin, View):
             perfil.autenticacao_dois_fatores = True
             if not perfil.totp_recovery_codes:
                 # Regerar hashes se perdidos (não deve acontecer, mas garante consistência)
-                from .twofa import hash_code
-
                 perfil.totp_recovery_codes = [hash_code(c) for c in raw_codes]
             perfil.save(
                 update_fields=[
@@ -767,7 +941,7 @@ class TwoFASetupView(LoginRequiredMixin, View):
                     "twofa_secret_encrypted",
                     "autenticacao_dois_fatores",
                     "totp_recovery_codes",
-                ]
+                ],
             )
         return JsonResponse(
             {
@@ -776,66 +950,22 @@ class TwoFASetupView(LoginRequiredMixin, View):
                 "provisioning_uri": uri,
                 "recovery_codes": raw_codes,
                 "recovery_codes_count": len(raw_codes or []),
-            }
+            },
         )
 
 
-class TwoFAAdminForceRegenerateView(LoginRequiredMixin, View):
-    """Gera novos recovery codes para o usuário (sem exigir token) mantendo mesmo secret.
-    Uso: emergência (suspeita de vazamento de códigos). Registra auditoria.
-    """
-
-    def post(self, request):
-        if not request.user.is_superuser:
-            return JsonResponse({"detail": "Forbidden"}, status=403)
-        target_id = request.POST.get("user_id") or request.GET.get("user_id")
-        if not target_id:
-            return JsonResponse({"detail": "user_id requerido"}, status=400)
-        from django.contrib.auth import get_user_model
-
-        User = get_user_model()
-        try:
-            target = User.objects.get(id=target_id)
-        except User.DoesNotExist:
-            return JsonResponse({"detail": "Usuário não encontrado"}, status=404)
-        perfil = target.perfil_estendido
-        if not perfil.totp_secret:
-            return JsonResponse({"detail": "Usuário ainda não tem 2FA configurado"}, status=400)
-        raw_codes = generate_recovery_codes()
-        perfil.totp_recovery_codes = [hash_code(c) for c in raw_codes]
-        perfil.failed_2fa_attempts = 0
-        perfil.twofa_locked_until = None
-        perfil.save(update_fields=["totp_recovery_codes", "failed_2fa_attempts", "twofa_locked_until"])
-        log_activity(
-            request.user,
-            "2FA_ADMIN_FORCE_REGEN",
-            "user_management",
-            f"Admin regenerou recovery codes para {target.username}",
-            objeto=None,
-            ip=request.META.get("REMOTE_ADDR", ""),
-            user_agent=request.META.get("HTTP_USER_AGENT", ""),
-        )
-        try:
-            if target.email:
-                send_mail(
-                    "[PandoraERP] Recovery codes regenerados pelo administrador",
-                    "Novos códigos de recuperação foram emitidos pelo administrador. Desconsidere os anteriores.",
-                    settings.DEFAULT_FROM_EMAIL,
-                    [target.email],
-                    fail_silently=True,
-                )
-        except Exception:
-            pass
-        return JsonResponse({"status": "ok", "recovery_codes": raw_codes, "count": len(raw_codes)})
+## Classe removida (duplicada) TwoFAAdminForceRegenerateView - mantida a versão mais completa abaixo
 
 
 class TwoFAMetricsDashboardView(LoginRequiredMixin, View):
+    """Exibe um dashboard HTML com métricas agregadas do uso de 2FA."""
+
     template_name = "user_management/2fa_metrics_dashboard.html"
 
-    def get(self, request):
+    def get(self, request: HttpRequest) -> HttpResponse:
+        """Renderiza o dashboard de métricas de 2FA (somente superusuário)."""
         if not request.user.is_superuser:
             return JsonResponse({"detail": "Somente superusuário."}, status=403)
-        from django.db.models import Sum
 
         qs = PerfilUsuarioEstendido.objects.all()
         total = qs.count()
@@ -868,11 +998,10 @@ class TwoFAMetricsDashboardView(LoginRequiredMixin, View):
 class TwoFAMetricsJSONView(LoginRequiredMixin, View):
     """Retorna métricas agregadas 2FA em JSON para consumo externo."""
 
-    def get(self, request):
+    def get(self, request: HttpRequest) -> JsonResponse:
+        """Retorna payload JSON com métricas agregadas de 2FA."""
         if not (request.user.is_staff or request.user.is_superuser):
             return JsonResponse({"detail": "forbidden"}, status=403)
-        from django.db.models import Count, Q, Sum
-
         agg = PerfilUsuarioEstendido.objects.aggregate(
             total=Count("id"),
             habilitados=Count("id", filter=Q(autenticacao_dois_fatores=True)),
@@ -883,11 +1012,10 @@ class TwoFAMetricsJSONView(LoginRequiredMixin, View):
             rl_blocks=Sum("twofa_rate_limit_block_count"),
         )
         # Bloqueios globais de IP não persistidos em modelo: extraímos do cache (chaves com prefixo twofa_global_block:)
-        try:
-            # Em caches como LocMem não há API para listar; manter contador acumulado:
+        # Em caches como LocMem não há API para listar; manter contador acumulado:
+        global_blocks = 0
+        with contextlib.suppress(Exception):
             global_blocks = cache.get("twofa_global_ip_block_metric", 0) or 0
-        except Exception:
-            global_blocks = 0
         agg["ip_blocks"] = int(global_blocks)
         for k, v in list(agg.items()):
             agg[k] = int(v or 0)
@@ -896,6 +1024,7 @@ class TwoFAMetricsJSONView(LoginRequiredMixin, View):
 
 def global_ip_rate_limit(ip: str, bucket: str, limit: int, window_seconds: int) -> bool:
     """Retorna True se ainda dentro do limite; False se excedido.
+
     Implementação simples em cache: contador com janela deslizante aproximada.
     """
     if not ip:
@@ -913,8 +1042,8 @@ def global_ip_rate_limit(ip: str, bucket: str, limit: int, window_seconds: int) 
         # Contabilizar métrica global (contador cumulativo)
         try:
             cache.incr("twofa_global_ip_block_metric")
-        except Exception:
-            # Fallback se incr não existir
+        except (ValueError, NotImplementedError):
+            # Fallback se 'incr' não existir ou a chave não existir
             cur = cache.get("twofa_global_ip_block_metric", 0) or 0
             cache.set("twofa_global_ip_block_metric", cur + 1, 24 * 3600)
         return False
@@ -924,37 +1053,38 @@ def global_ip_rate_limit(ip: str, bucket: str, limit: int, window_seconds: int) 
     return True
 
 
-def emit_twofa_failure_alert(request, perfil, label: str):
+def emit_twofa_failure_alert(request: HttpRequest, perfil: PerfilUsuarioEstendido, label: str) -> None:
     """Centraliza envio de email de alerta em thresholds configurados.
+
     Usa igualdade exata (==) com thresholds; cooldown por (user,threshold).
     """
-    from django.conf import settings as _s
-
-    try:
-        thresholds = getattr(_s, "TWOFA_ALERT_THRESHOLDS", (20, 50, 100))
-        cooldown_min = getattr(_s, "TWOFA_ALERT_EMAIL_COOLDOWN_MINUTES", 30)
-        failures = getattr(perfil, "twofa_failure_count", 0)
-        if failures in thresholds and request.user.email:
-            cache_key = f"twofa_alert_last_email:{request.user.pk}:{failures}"
-            if not cache.get(cache_key):
+    thresholds = getattr(settings, "TWOFA_ALERT_THRESHOLDS", (20, 50, 100))
+    cooldown_min = getattr(settings, "TWOFA_ALERT_EMAIL_COOLDOWN_MINUTES", 30)
+    failures = getattr(perfil, "twofa_failure_count", 0)
+    if failures in thresholds and request.user.email:
+        cache_key = f"twofa_alert_last_email:{request.user.pk}:{failures}"
+        if not cache.get(cache_key):
+            with contextlib.suppress(Exception):
                 send_mail(
                     f"[PandoraERP] Múltiplas falhas de 2FA ({label})",
-                    "Detectamos um número elevado de falhas de verificação 2FA em sua conta. Se não foi você, considere ações de segurança.",
+                    (
+                        "Detectamos um número elevado de falhas de verificação 2FA em sua conta. "
+                        "Se não foi você, considere ações de segurança."
+                    ),
                     settings.DEFAULT_FROM_EMAIL,
                     [request.user.email],
                     fail_silently=True,
                 )
-                cache.set(cache_key, True, cooldown_min * 60)
-    except Exception:
-        pass
+                cache.set(cache_key, value=True, timeout=cooldown_min * 60)
 
 
 class TwoFAConfirmView(LoginRequiredMixin, View):
-    def post(self, request):
+    """Confirma a configuração do 2FA validando um token TOTP inicial."""
+
+    def post(self, request: HttpRequest) -> JsonResponse:  # noqa: C901, PLR0911
+        """Confirma o 2FA com um token TOTP inicial, com rate limit e lockout."""
         data = {}
         if request.content_type == "application/json":
-            import json
-
             with contextlib.suppress(Exception):
                 data = json.loads(request.body or "{}")
         token = request.POST.get("token") or data.get("token")
@@ -962,17 +1092,16 @@ class TwoFAConfirmView(LoginRequiredMixin, View):
             return JsonResponse({"detail": "Token obrigatório"}, status=400)
         perfil = request.user.perfil_estendido
         # Lockout pré-existente (reuso da mesma semântica da verify)
-        if getattr(perfil, "twofa_locked_until", None):
-            from django.utils import timezone
-
-            if perfil.twofa_locked_until and perfil.twofa_locked_until > timezone.now():
-                return JsonResponse({"detail": RATE_MSG_LOCK}, status=423)
+        if getattr(perfil, "twofa_locked_until", None) and perfil.twofa_locked_until > timezone.now():
+            return JsonResponse({"detail": RATE_MSG_LOCK}, status=423)
         if not perfil.totp_secret:
             return JsonResponse({"detail": "2FA não iniciado"}, status=400)
         ip = request.META.get("REMOTE_ADDR", "")
         # Rate limit global (novo helper centralizado)
         if not global_ip_rate_limit_check(
-            ip, getattr(settings, "TWOFA_GLOBAL_IP_LIMIT", 60), getattr(settings, "TWOFA_GLOBAL_IP_WINDOW", 300)
+            ip,
+            getattr(settings, "TWOFA_GLOBAL_IP_LIMIT", 60),
+            getattr(settings, "TWOFA_GLOBAL_IP_WINDOW", 300),
         ):
             return JsonResponse({"detail": RATE_MSG_GLOBAL_IP}, status=429)
         if confirm_2fa(perfil, token):
@@ -987,35 +1116,31 @@ class TwoFAConfirmView(LoginRequiredMixin, View):
             )
             return JsonResponse({"status": "ok"})
         # Falha: confirm_2fa já incrementou failed_2fa_attempts e twofa_failure_count
-        from django.conf import settings as _s
-
         lock_applied = False
-        threshold = getattr(_s, "TWOFA_LOCK_THRESHOLD", 5)
+        threshold = getattr(settings, "TWOFA_LOCK_THRESHOLD", 5)
         if perfil.failed_2fa_attempts >= threshold:
             try:
-                from django.utils import timezone
-
-                minutos = getattr(_s, "TWOFA_LOCK_MINUTES", 5)
-                perfil.twofa_locked_until = timezone.now() + timezone.timedelta(minutes=minutos)
+                minutos = getattr(settings, "TWOFA_LOCK_MINUTES", 5)
+                perfil.twofa_locked_until = timezone.now() + timedelta(minutes=minutos)
                 perfil.failed_2fa_attempts = 0
                 perfil.save(update_fields=["failed_2fa_attempts", "twofa_locked_until"])
                 lock_applied = True
             except Exception:
-                pass
+                logger.exception("Falha ao aplicar lock 2FA na confirmação")
         # Email de alerta (usa contador já atualizado)
         if not lock_applied:
             emit_twofa_failure_alert(request, perfil, "confirm")
         if lock_applied:
-            try:
-                pass  # remove debug logging
-            except Exception:
-                pass
             return JsonResponse({"detail": RATE_MSG_LOCK}, status=423)
+        # Nada de token válido
         return JsonResponse({"detail": "Token inválido"}, status=400)
 
 
 class TwoFADisableView(LoginRequiredMixin, View):
-    def post(self, request):
+    """Desabilita o 2FA do usuário autenticado."""
+
+    def post(self, request: HttpRequest) -> JsonResponse:
+        """Desativa o 2FA do usuário atual e registra a atividade."""
         perfil = request.user.perfil_estendido
         disable_2fa(perfil)
         log_activity(
@@ -1031,30 +1156,30 @@ class TwoFADisableView(LoginRequiredMixin, View):
 
 
 class TwoFAVerifyView(LoginRequiredMixin, View):
-    def post(self, request):
+    """Endpoint de verificação de 2FA (token TOTP ou recovery code)."""
+
+    def post(self, request: HttpRequest) -> JsonResponse:  # noqa: C901, PLR0911, PLR0912, PLR0915
+        """Verifica token TOTP ou recovery code, aplica rate limit e lockout."""
         data = {}
         if request.content_type == "application/json":
-            import json
-
             with contextlib.suppress(Exception):
                 data = json.loads(request.body or "{}")
         token = request.POST.get("token") or data.get("token")
         recovery_code = request.POST.get("recovery_code") or data.get("recovery_code")
         perfil = request.user.perfil_estendido
         # Lockout check
-        if getattr(perfil, "twofa_locked_until", None):
-            from django.utils import timezone
-
-            if perfil.twofa_locked_until and perfil.twofa_locked_until > timezone.now():
-                return JsonResponse({"detail": RATE_MSG_LOCK}, status=423)
+        if getattr(perfil, "twofa_locked_until", None) and perfil.twofa_locked_until > timezone.now():
+            return JsonResponse({"detail": RATE_MSG_LOCK}, status=423)
         if not perfil.autenticacao_dois_fatores or not perfil.totp_secret:
             return JsonResponse({"detail": "2FA não habilitado"}, status=400)
         # Rate limiting micro-burst + global IP
         ip = request.META.get("REMOTE_ADDR", "")
         if not global_ip_rate_limit_check(
-            ip, getattr(settings, "TWOFA_GLOBAL_IP_LIMIT", 60), getattr(settings, "TWOFA_GLOBAL_IP_WINDOW", 300)
+            ip,
+            getattr(settings, "TWOFA_GLOBAL_IP_LIMIT", 60),
+            getattr(settings, "TWOFA_GLOBAL_IP_WINDOW", 300),
         ):
-            try:
+            with contextlib.suppress(Exception):
                 perfil.twofa_rate_limit_block_count = (perfil.twofa_rate_limit_block_count or 0) + 1
                 perfil.save(update_fields=["twofa_rate_limit_block_count"])
                 log_activity(
@@ -1065,11 +1190,10 @@ class TwoFAVerifyView(LoginRequiredMixin, View):
                     ip=ip,
                     user_agent=request.META.get("HTTP_USER_AGENT", ""),
                 )
-            except Exception:
-                pass
             return JsonResponse({"detail": RATE_MSG_GLOBAL_IP}, status=429)
-        if not rate_limit_check(request.user.id, ip):
-            try:
+        user_id = int(request.user.id) if request.user.id is not None else 0
+        if not rate_limit_check(user_id, ip):
+            with contextlib.suppress(Exception):
                 perfil.twofa_rate_limit_block_count = (perfil.twofa_rate_limit_block_count or 0) + 1
                 perfil.save(update_fields=["twofa_rate_limit_block_count"])
                 log_activity(
@@ -1080,8 +1204,6 @@ class TwoFAVerifyView(LoginRequiredMixin, View):
                     ip=ip,
                     user_agent=request.META.get("HTTP_USER_AGENT", ""),
                 )
-            except Exception:
-                pass
             return JsonResponse({"detail": RATE_MSG_MICRO}, status=429)
         # Decriptar segredo se cifrado
         secret_value = perfil.totp_secret
@@ -1094,7 +1216,7 @@ class TwoFAVerifyView(LoginRequiredMixin, View):
             try:
                 perfil.twofa_success_count = (perfil.twofa_success_count or 0) + 1
                 save_fields = ["failed_2fa_attempts", "twofa_locked_until", "twofa_success_count"]
-            except Exception:
+            except (TypeError, ValueError):
                 save_fields = ["failed_2fa_attempts", "twofa_locked_until"]
             perfil.save(update_fields=save_fields)
             log_activity(
@@ -1120,11 +1242,9 @@ class TwoFAVerifyView(LoginRequiredMixin, View):
                 ip=request.META.get("REMOTE_ADDR", ""),
                 user_agent=request.META.get("HTTP_USER_AGENT", ""),
             )
-            try:
+            with contextlib.suppress(Exception):
                 perfil.twofa_recovery_use_count = (perfil.twofa_recovery_use_count or 0) + 1
                 perfil.save(update_fields=["twofa_recovery_use_count"])
-            except Exception:
-                pass
             request.session["twofa_passed"] = True
             with contextlib.suppress(Exception):
                 request.session.modified = True
@@ -1132,6 +1252,7 @@ class TwoFAVerifyView(LoginRequiredMixin, View):
             try:
                 rem_len = len(remaining_codes)
             except Exception:
+                logger.exception("Falha ao calcular número de recovery codes restantes")
                 rem_len = 0
             return JsonResponse({"status": "ok", "recovery_used": True, "remaining": rem_len})
         # Falha: incrementar e avaliar lockout
@@ -1139,17 +1260,13 @@ class TwoFAVerifyView(LoginRequiredMixin, View):
         try:
             perfil.twofa_failure_count = (perfil.twofa_failure_count or 0) + 1
             save_fields_fail = ["failed_2fa_attempts", "twofa_locked_until", "twofa_failure_count"]
-        except Exception:
+        except (TypeError, ValueError):
             save_fields_fail = ["failed_2fa_attempts", "twofa_locked_until"]
         lock_applied = False
         # Threshold e duração de lock vindos de settings
-        from django.conf import settings as _s
-
-        if perfil.failed_2fa_attempts >= getattr(_s, "TWOFA_LOCK_THRESHOLD", 5):
-            from django.utils import timezone
-
-            minutos = getattr(_s, "TWOFA_LOCK_MINUTES", 5)
-            perfil.twofa_locked_until = timezone.now() + timezone.timedelta(minutes=minutos)
+        if perfil.failed_2fa_attempts >= getattr(settings, "TWOFA_LOCK_THRESHOLD", 5):
+            minutos = getattr(settings, "TWOFA_LOCK_MINUTES", 5)
+            perfil.twofa_locked_until = timezone.now() + timedelta(minutes=minutos)
             perfil.failed_2fa_attempts = 0  # reset contador após aplicar lock
             lock_applied = True
         perfil.save(update_fields=save_fields_fail)
@@ -1161,9 +1278,12 @@ class TwoFAVerifyView(LoginRequiredMixin, View):
 
 
 class TwoFAChallengeView(LoginRequiredMixin, View):
+    """Página de desafio 2FA quando a sessão ainda não passou pelo segundo fator."""
+
     template_name = "user_management/2fa_challenge.html"
 
-    def get(self, request):
+    def get(self, request: HttpRequest) -> HttpResponse:
+        """Exibe o formulário de desafio se 2FA estiver habilitado e pendente."""
         perfil = request.user.perfil_estendido
         if not perfil.autenticacao_dois_fatores or not perfil.totp_secret or request.session.get("twofa_passed"):
             return redirect("/")
@@ -1172,19 +1292,22 @@ class TwoFAChallengeView(LoginRequiredMixin, View):
 
 class TwoFARegenerateCodesView(LoginRequiredMixin, View):
     """Regenera recovery codes exigindo token TOTP válido.
+
     Regras:
-      - 2FA habilitado e confirmado.
-      - Token válido.
-      - Aplica rate limit micro e lockout como verify.
+    - 2FA habilitado e confirmado.
+    - Token válido.
+    - Aplica rate limit micro e lockout como verify.
     """
 
-    def post(self, request):
+    def post(self, request: HttpRequest) -> JsonResponse:  # noqa: PLR0911
+        """Valida token e regenera recovery codes, respeitando rate limit/lockout."""
         perfil = request.user.perfil_estendido
         if not (perfil.autenticacao_dois_fatores and perfil.totp_secret and perfil.totp_confirmed_at):
             return JsonResponse({"detail": "2FA não habilitado/confirmado."}, status=400)
         ip = request.META.get("REMOTE_ADDR", "")
-        if not rate_limit_check(request.user.id, ip):
-            try:
+        user_id = int(request.user.id) if request.user.id is not None else 0
+        if not rate_limit_check(user_id, ip):
+            with contextlib.suppress(Exception):
                 perfil.twofa_rate_limit_block_count = (perfil.twofa_rate_limit_block_count or 0) + 1
                 perfil.save(update_fields=["twofa_rate_limit_block_count"])
                 log_activity(
@@ -1195,35 +1318,26 @@ class TwoFARegenerateCodesView(LoginRequiredMixin, View):
                     ip=ip,
                     user_agent=request.META.get("HTTP_USER_AGENT", ""),
                 )
-            except Exception:
-                pass
             return JsonResponse({"detail": RATE_MSG_MICRO}, status=429)
-        if getattr(perfil, "twofa_locked_until", None):
-            from django.utils import timezone
-
-            if perfil.twofa_locked_until and perfil.twofa_locked_until > timezone.now():
-                return JsonResponse({"detail": RATE_MSG_LOCK}, status=423)
+        if getattr(perfil, "twofa_locked_until", None) and perfil.twofa_locked_until > timezone.now():
+            return JsonResponse({"detail": RATE_MSG_LOCK}, status=423)
         data = {}
         if request.content_type == "application/json":
-            import json
-
             with contextlib.suppress(Exception):
                 data = json.loads(request.body or "{}")
         token = request.POST.get("token") or data.get("token")
         if not token:
             return JsonResponse({"detail": "Token obrigatório."}, status=400)
-        from .twofa import generate_recovery_codes, hash_code, verify_totp
-
         secret_value = perfil.totp_secret
         if perfil.twofa_secret_encrypted:
             secret_value = decrypt_secret(secret_value)
         if not verify_totp(secret_value, token):
             perfil.failed_2fa_attempts += 1
             lock_applied = False
-            if perfil.failed_2fa_attempts >= 5:
-                from django.utils import timezone
-
-                perfil.twofa_locked_until = timezone.now() + timezone.timedelta(minutes=5)
+            # Threshold e duração parametrizados por settings
+            if perfil.failed_2fa_attempts >= getattr(settings, "TWOFA_LOCK_THRESHOLD", 5):
+                minutos = getattr(settings, "TWOFA_LOCK_MINUTES", 5)
+                perfil.twofa_locked_until = timezone.now() + timedelta(minutes=minutos)
                 perfil.failed_2fa_attempts = 0
                 lock_applied = True
             perfil.save(update_fields=["failed_2fa_attempts", "twofa_locked_until"])
@@ -1247,7 +1361,10 @@ class TwoFARegenerateCodesView(LoginRequiredMixin, View):
         with contextlib.suppress(Exception):
             send_mail(
                 "[PandoraERP] Recovery codes regenerados",
-                "Seus códigos de recuperação foram regenerados. Guarde-os em local seguro. Eles são exibidos apenas uma vez.",
+                (
+                    "Seus códigos de recuperação foram regenerados. Guarde-os em local seguro. "
+                    "Eles são exibidos apenas uma vez."
+                ),
                 settings.DEFAULT_FROM_EMAIL,
                 [request.user.email],
                 fail_silently=True,
@@ -1257,16 +1374,16 @@ class TwoFARegenerateCodesView(LoginRequiredMixin, View):
 
 class TwoFAAdminResetView(LoginRequiredMixin, View):
     """Superuser pode resetar 2FA de um usuário específico via POST user_id.
+
     Body (form/json): {"user_id": <id>}.
     """
 
-    def post(self, request):
+    def post(self, request: HttpRequest) -> JsonResponse:
+        """Reseta o 2FA de um usuário alvo (somente superusuário)."""
         if not request.user.is_superuser:
             return JsonResponse({"detail": "Somente superusuário."}, status=403)
         data = {}
         if request.content_type == "application/json":
-            import json
-
             with contextlib.suppress(Exception):
                 data = json.loads(request.body or "{}")
         user_id = request.POST.get("user_id") or data.get("user_id")
@@ -1275,10 +1392,8 @@ class TwoFAAdminResetView(LoginRequiredMixin, View):
         try:
             target = User.objects.get(pk=user_id)
             perfil = target.perfil_estendido
-        except Exception:
+        except User.DoesNotExist:
             return JsonResponse({"detail": "Usuário não encontrado."}, status=404)
-        from .twofa import disable_2fa
-
         disable_2fa(perfil)
         log_activity(
             request.user,
@@ -1289,7 +1404,7 @@ class TwoFAAdminResetView(LoginRequiredMixin, View):
             ip=request.META.get("REMOTE_ADDR", ""),
             user_agent=request.META.get("HTTP_USER_AGENT", ""),
         )
-        try:
+        with contextlib.suppress(Exception):
             if target.email:
                 send_mail(
                     "[PandoraERP] 2FA resetado pelo administrador",
@@ -1298,24 +1413,23 @@ class TwoFAAdminResetView(LoginRequiredMixin, View):
                     [target.email],
                     fail_silently=True,
                 )
-        except Exception:
-            pass
         return JsonResponse({"status": "ok", "detail": "2FA resetado; usuário deve reconfigurar."})
 
 
 class TwoFAAdminForceRegenerateView(LoginRequiredMixin, View):
     """Superuser força nova geração de códigos de recuperação sem token do usuário.
+
     POST {"user_id": <id>}
+
     Mantém o mesmo secret TOTP, apenas substitui recovery codes.
     """
 
-    def post(self, request):
+    def post(self, request: HttpRequest) -> JsonResponse:
+        """Gera novos recovery codes para o usuário alvo (somente superusuário)."""
         if not request.user.is_superuser:
             return JsonResponse({"detail": "Somente superusuário."}, status=403)
         data = {}
         if request.content_type == "application/json":
-            import json
-
             with contextlib.suppress(Exception):
                 data = json.loads(request.body or "{}")
         user_id = request.POST.get("user_id") or data.get("user_id")
@@ -1324,7 +1438,7 @@ class TwoFAAdminForceRegenerateView(LoginRequiredMixin, View):
         try:
             target = User.objects.get(pk=user_id)
             perfil = target.perfil_estendido
-        except Exception:
+        except User.DoesNotExist:
             return JsonResponse({"detail": "Usuário não encontrado."}, status=404)
         if not perfil.totp_secret:
             return JsonResponse({"detail": "Usuário não possui 2FA ativo."}, status=400)
@@ -1341,17 +1455,18 @@ class TwoFAAdminForceRegenerateView(LoginRequiredMixin, View):
             ip=request.META.get("REMOTE_ADDR", ""),
             user_agent=request.META.get("HTTP_USER_AGENT", ""),
         )
-        try:
+        with contextlib.suppress(Exception):
             if target.email:
                 send_mail(
                     "[PandoraERP] Novos recovery codes gerados pelo administrador",
-                    "Um administrador gerou novos códigos de recuperação para sua conta. Os códigos antigos foram invalidados.",
+                    (
+                        "Um administrador gerou novos códigos de recuperação para sua conta. "
+                        "Os códigos antigos foram invalidados."
+                    ),
                     settings.DEFAULT_FROM_EMAIL,
                     [target.email],
                     fail_silently=True,
                 )
-        except Exception:
-            pass
         return JsonResponse({"status": "ok", "recovery_codes": raw_codes, "count": len(raw_codes)})
 
 
@@ -1364,10 +1479,9 @@ class SessaoEncerrarMultiplasView(LoginRequiredMixin, View):
       - usuário comum: apenas suas próprias sessões
     """
 
-    def post(self, request):
-        import json
-
-        ids = []
+    def post(self, request: HttpRequest) -> JsonResponse:
+        """Encerra sessões pelos IDs informados, respeitando permissões e formato de entrada."""
+        ids: list[int] = []
         if request.content_type == "application/json":
             try:
                 payload = json.loads(request.body or "{}")
@@ -1377,7 +1491,8 @@ class SessaoEncerrarMultiplasView(LoginRequiredMixin, View):
         else:
             raw = request.POST.get("ids", "")
             if raw:
-                ids = [p for p in raw.replace(";", ",").split(",") if p.strip()]
+                temp_ids: list[str] = [p for p in raw.replace(";", ",").split(",") if p.strip()]
+                ids = temp_ids  # type: ignore[assignment]
         try:
             ids = list(map(int, ids))
         except ValueError:
@@ -1413,7 +1528,8 @@ class SessaoEncerrarMultiplasView(LoginRequiredMixin, View):
 class ToggleTwoFactorView(LoginRequiredMixin, View):
     """Alterna o estado de 2FA de um usuário (ou o próprio usuário)."""
 
-    def post(self, request, pk):
+    def post(self, request: HttpRequest, pk: int) -> HttpResponse:
+        """Alterna a flag de 2FA para o perfil indicado e retorna resposta apropriada."""
         perfil = get_object_or_404(PerfilUsuarioEstendido, pk=pk)
         # Permite se for o próprio usuário ou superuser; TODO: permitir tenant admin futuramente
         if request.user != perfil.user and not request.user.is_superuser:
@@ -1438,15 +1554,13 @@ class ToggleTwoFactorView(LoginRequiredMixin, View):
 class SessaoUsuarioApiView(LoginRequiredMixin, View):
     """API JSON para listagem paginada e filtrada de sessões com riscos."""
 
-    def get(self, request):
+    def get(self, request: HttpRequest) -> JsonResponse:  # noqa: C901
+        """Retorna sessões paginadas com cálculo de riscos e filtros opcionais."""
         qs = SessaoUsuario.objects.all().select_related("user")
         # Escopo tenant se não superuser
         if not request.user.is_superuser:
             tenant = getattr(request, "tenant", None)
-            if tenant:
-                qs = qs.filter(user__tenant_memberships__tenant_id=tenant.id)
-            else:
-                qs = qs.filter(user=request.user)  # fallback restrito
+            qs = qs.filter(user__tenant_memberships__tenant_id=tenant.id) if tenant else qs.filter(user=request.user)
 
         # Filtros básicos
         q = request.GET.get("q", "").strip()
@@ -1455,7 +1569,7 @@ class SessaoUsuarioApiView(LoginRequiredMixin, View):
                 Q(user__username__icontains=q)
                 | Q(user__email__icontains=q)
                 | Q(ip_address__icontains=q)
-                | Q(user_agent__icontains=q)
+                | Q(user_agent__icontains=q),
             )
         status_param = request.GET.get("status")
         if status_param == "ativo":
@@ -1463,25 +1577,21 @@ class SessaoUsuarioApiView(LoginRequiredMixin, View):
         elif status_param == "inativo":
             qs = qs.filter(ativa=False)
 
-        # Datas (criada_em)
+        # Filtro por intervalo de datas (campo criada_em)
         created_from = request.GET.get("created_from")
         created_to = request.GET.get("created_to")
         if created_from:
-            try:
-                dtf = timezone.datetime.fromisoformat(created_from)
+            with contextlib.suppress(ValueError, TypeError):
+                dtf = datetime.fromisoformat(created_from)
                 if timezone.is_naive(dtf):
                     dtf = timezone.make_aware(dtf)
                 qs = qs.filter(criada_em__gte=dtf)
-            except Exception:
-                pass
         if created_to:
-            try:
-                dtt = timezone.datetime.fromisoformat(created_to)
+            with contextlib.suppress(ValueError, TypeError):
+                dtt = datetime.fromisoformat(created_to)
                 if timezone.is_naive(dtt):
                     dtt = timezone.make_aware(dtt)
                 qs = qs.filter(criada_em__lte=dtt)
-            except Exception:
-                pass
 
         qs = qs.order_by("-ultima_atividade")
 
@@ -1519,19 +1629,20 @@ class SessaoUsuarioApiView(LoginRequiredMixin, View):
                 "total": total,
                 "has_next": has_next,
                 "sessions": sessions_data,
-            }
+            },
         )
 
 
 class UsuarioDeleteView(TenantAdminOrSuperuserMixin, PageTitleMixin, View):
-    """
-    View para exclusão de usuários.
+    """View para exclusão de usuários.
+
     Só permite exclusão se o usuário não for superuser.
     """
 
     page_title = "Excluir Usuário"
 
-    def get(self, request, pk):
+    def get(self, request: HttpRequest, pk: int) -> HttpResponse:
+        """Exibe a página de confirmação de exclusão do usuário."""
         usuario = get_object_or_404(PerfilUsuarioEstendido, pk=pk)
 
         # Impedir exclusão de superusuários
@@ -1540,10 +1651,13 @@ class UsuarioDeleteView(TenantAdminOrSuperuserMixin, PageTitleMixin, View):
             return redirect("user_management:usuario_list")
 
         return render(
-            request, "user_management/usuario_confirm_delete.html", {"usuario": usuario, "page_title": self.page_title}
+            request,
+            "user_management/usuario_confirm_delete.html",
+            {"usuario": usuario, "page_title": self.page_title},
         )
 
-    def post(self, request, pk):
+    def post(self, request: HttpRequest, pk: int) -> HttpResponse:
+        """Exclui o usuário se permitido e redireciona para a lista."""
         usuario = get_object_or_404(PerfilUsuarioEstendido, pk=pk)
 
         # Impedir exclusão de superusuários
@@ -1558,8 +1672,8 @@ class UsuarioDeleteView(TenantAdminOrSuperuserMixin, PageTitleMixin, View):
             # Excluir o usuário (cascade irá excluir o perfil estendido)
             usuario.user.delete()
             messages.success(request, f"Usuário '{nome_usuario}' foi excluído com sucesso.")
-        except Exception as e:
-            messages.error(request, f"Erro ao excluir usuário: {str(e)}")
+        except Exception as e:  # noqa: BLE001 - mantemos amplo para cobrir erros de DB/backend
+            messages.error(request, f"Erro ao excluir usuário: {e!s}")
 
         return redirect("user_management:usuario_list")
 
@@ -1575,43 +1689,45 @@ class UsuarioDeleteView(TenantAdminOrSuperuserMixin, PageTitleMixin, View):
 
 
 class MeuPerfilView(LoginRequiredMixin, UpdateView):
-    """View para o usuário editar seu próprio perfil"""
+    """View para o usuário editar seu próprio perfil."""
 
     template_name = "user_management/meu_perfil.html"
     success_url = reverse_lazy("user_management:meu_perfil")
 
-    def get_object(self):
-        """Retorna o perfil estendido do usuário logado"""
+    def get_object(self) -> PerfilUsuarioEstendido:
+        """Retorna o perfil estendido do usuário logado."""
         perfil, created = PerfilUsuarioEstendido.objects.get_or_create(user=self.request.user)
         return perfil
 
-    def get_form_class(self):
+    def get_form_class(self) -> type[MeuPerfilForm]:
+        """Retorna a classe de formulário do perfil."""
         return MeuPerfilForm
 
-    def form_valid(self, form):
+    def form_valid(self, form: BaseModelForm) -> HttpResponse:
+        """Confirma o formulário e exibe mensagem de sucesso."""
         messages.success(self.request, "Perfil atualizado com sucesso!")
         return super().form_valid(form)
 
-    def get_context_data(self, **kwargs):
+    def get_context_data(self, **kwargs: dict[str, Any]) -> dict[str, Any]:
+        """Inclui o título da página no contexto."""
         context = super().get_context_data(**kwargs)
         context["page_title"] = "Meu Perfil"
         return context
 
 
-from django.contrib.auth.views import PasswordChangeView
-
-
 class ChangePasswordView(PasswordChangeView):
-    """View para mudança de senha do usuário"""
+    """View para mudança de senha do usuário."""
 
     template_name = "user_management/change_password.html"
     success_url = reverse_lazy("user_management:meu_perfil")
 
-    def form_valid(self, form):
+    def form_valid(self, form: BaseModelForm) -> HttpResponse:
+        """Confirma a alteração de senha e mostra mensagem de sucesso."""
         messages.success(self.request, "Senha alterada com sucesso!")
         return super().form_valid(form)
 
-    def get_context_data(self, **kwargs):
+    def get_context_data(self, **kwargs: dict[str, Any]) -> dict[str, Any]:
+        """Inclui o título da página no contexto."""
         context = super().get_context_data(**kwargs)
         context["page_title"] = "Alterar Senha"
         return context

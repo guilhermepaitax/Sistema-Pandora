@@ -1,83 +1,171 @@
+"""Formulários para o módulo de gerenciamento de usuários."""
+
+import logging
 from datetime import timedelta
+from typing import Any, ClassVar
 
 from django import forms
+from django.apps import apps
 from django.contrib.auth import get_user_model
 from django.contrib.auth.forms import UserCreationForm
+from django.contrib.auth.models import AbstractUser, Group
 from django.core.exceptions import ValidationError
 from django.utils import timezone
+from django.utils.translation import gettext_lazy as _
+
+from core.module_registry import get_all_module_choices
 
 from .models import ConviteUsuario, PerfilUsuarioEstendido, PermissaoPersonalizada, StatusUsuario, TipoUsuario
 
+logger = logging.getLogger(__name__)
+
+# O aplicativo de funcionários é opcional.
+FuncionarioModel: type[Any] | None = None
 try:
     from funcionarios.models import Funcionario
-except Exception:  # módulo pode não existir no setup mínimo de testes
-    Funcionario = None
+
+    FuncionarioModel = Funcionario
+except ImportError:
+    pass  # Mantém FuncionarioModel como None se o app não existir
 
 User = get_user_model()
 
 
 class UsuarioCreateForm(UserCreationForm):
-    """Formulário para criação de usuários com perfil estendido"""
+    """Formulário para criação de usuários com perfil estendido."""
 
-    # Campos do User
-    first_name = forms.CharField(max_length=30, required=True, label="Nome")
-    last_name = forms.CharField(max_length=30, required=True, label="Sobrenome")
-    email = forms.EmailField(required=True, label="E-mail")
-
-    # Campos do PerfilUsuarioEstendido
-    avatar = forms.ImageField(
-        required=False, label="Foto do Perfil", help_text="Imagem para o avatar do usuário (PNG, JPG, máx. 5MB)"
+    first_name: ClassVar[forms.CharField] = forms.CharField(max_length=30, required=True, label="Nome")
+    last_name: ClassVar[forms.CharField] = forms.CharField(max_length=30, required=True, label="Sobrenome")
+    email: ClassVar[forms.EmailField] = forms.EmailField(required=True, label="E-mail")
+    avatar: ClassVar[forms.ImageField] = forms.ImageField(
+        required=False,
+        label="Foto do Perfil",
+        help_text="Imagem para o avatar do usuário (PNG, JPG, máx. 5MB)",
     )
-    tipo_usuario = forms.ChoiceField(choices=TipoUsuario.choices, required=True, label="Tipo de Usuário")
-    cpf = forms.CharField(
-        max_length=14, required=False, label="CPF", widget=forms.TextInput(attrs={"placeholder": "000.000.000-00"})
+    tipo_usuario: ClassVar[forms.ChoiceField] = forms.ChoiceField(
+        choices=TipoUsuario.choices,
+        required=True,
+        label="Tipo de Usuário",
     )
-    telefone = forms.CharField(max_length=20, required=False, label="Telefone")
-    celular = forms.CharField(max_length=20, required=False, label="Celular")
-    cargo = forms.CharField(max_length=100, required=False, label="Cargo")
-    departamento = forms.CharField(max_length=100, required=False, label="Departamento")
+    cpf: ClassVar[forms.CharField] = forms.CharField(
+        max_length=14,
+        required=False,
+        label="CPF",
+        widget=forms.TextInput(attrs={"placeholder": "000.000.000-00"}),
+    )
+    telefone: ClassVar[forms.CharField] = forms.CharField(max_length=20, required=False, label="Telefone")
+    celular: ClassVar[forms.CharField] = forms.CharField(max_length=20, required=False, label="Celular")
+    cargo: ClassVar[forms.CharField] = forms.CharField(max_length=100, required=False, label="Cargo")
+    departamento: ClassVar[forms.CharField] = forms.CharField(max_length=100, required=False, label="Departamento")
+    is_active: ClassVar[forms.BooleanField] = forms.BooleanField(required=False, label="Usuário Ativo", initial=True)
+    is_staff: ClassVar[forms.BooleanField] = forms.BooleanField(required=False, label="Acesso Staff", initial=False)
+    is_superuser: ClassVar[forms.BooleanField] = forms.BooleanField(required=False, label="Superusuário", initial=False)
+    # Grupos (opcional, só exposto para superusuário na UI)
+    groups: ClassVar[forms.ModelMultipleChoiceField] = forms.ModelMultipleChoiceField(
+        queryset=Group.objects.all(),
+        required=False,
+        label="Grupos",
+        widget=forms.SelectMultiple(attrs={"class": "form-select"}),
+    )
 
     class Meta:
-        model = User
-        fields = ("username", "first_name", "last_name", "email")  # Removido password1 e password2
+        """Meta opções para o formulário de criação de usuário."""
 
-    def __init__(self, *args, **kwargs):
+        model = User
+        fields: ClassVar[tuple[str, ...]] = ("username", "first_name", "last_name", "email")
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:  # noqa: ANN401
+        """Inicializa o formulário e injeta o usuário da requisição e o tenant."""
         self.request_user = kwargs.pop("request_user", None)
         self.tenant = kwargs.pop("tenant", None)
         super().__init__(*args, **kwargs)
+        self._restringir_opcoes_tipo_usuario()
+        self._aplicar_estilos_css()
+        self._configurar_privilegios_e_grupos()
 
-        # Limitar as opções de tipo de usuário
+    def _restringir_opcoes_tipo_usuario(self) -> None:
+        """Restringe opções de tipo de usuário para não-superusuários."""
         if self.request_user and not self.request_user.is_superuser:
-            # Admin de empresa não pode criar super_admin ou outro admin_empresa
             self.fields["tipo_usuario"].choices = [
                 (k, v) for k, v in TipoUsuario.choices if k not in [TipoUsuario.SUPER_ADMIN, TipoUsuario.ADMIN_EMPRESA]
             ]
 
-        # Adicionar classes CSS
-        for _field_name, field in self.fields.items():
+    def _aplicar_estilos_css(self) -> None:
+        """Aplica classes CSS apropriadas em inputs e checkboxes."""
+        for field in self.fields.values():
             field.widget.attrs["class"] = "form-control"
+        for fname in ("is_active", "is_staff", "is_superuser"):
+            if fname in self.fields and getattr(self.fields[fname].widget, "input_type", "") == "checkbox":
+                self.fields[fname].widget.attrs["class"] = "form-check-input"
 
-    def clean_email(self):
+    def _configurar_privilegios_e_grupos(self) -> None:
+        """Desabilita campos privilegiados e controla exibição do campo de grupos."""
+        if not (self.request_user and self.request_user.is_superuser):
+            for fname in ("is_staff", "is_superuser"):
+                if fname in self.fields:
+                    self.fields[fname].disabled = True
+
+            # Determina se o usuário autenticado é administrador do tenant
+            is_tenant_admin = False
+            try:
+                TenantUser = apps.get_model("core", "TenantUser")
+                if self.request_user is not None:
+                    is_tenant_admin = TenantUser.objects.filter(
+                        user=self.request_user,
+                        is_tenant_admin=True,
+                    ).exists()
+            except LookupError:
+                # Em caso de erro ao resolver o modelo (migrações iniciais, etc.), manter seguro
+                is_tenant_admin = False
+
+            if not is_tenant_admin and "groups" in self.fields:
+                # Usuário comum vê o campo, mas não pode alterá-lo
+                self.fields["groups"].disabled = True
+                self.fields["groups"].help_text = (
+                    (self.fields["groups"].help_text or "") + " Somente administradores do tenant podem alterar grupos."
+                ).strip()
+            elif "groups" in self.fields:
+                # Admin de tenant pode atribuir grupos existentes; adicionar dica visual
+                self.fields["groups"].help_text = (
+                    self.fields["groups"].help_text or ""
+                ) + " Seleção disponível para administradores do tenant."
+
+    def clean_email(self) -> str:
+        """Valida se o e-mail já está em uso."""
         email = self.cleaned_data["email"]
         if User.objects.filter(email=email).exists():
-            raise ValidationError("Este e-mail já está em uso.")
+            msg = "Este e-mail já está em uso."
+            raise ValidationError(msg)
         return email
 
-    def clean_cpf(self):
+    def clean_cpf(self) -> str | None:
+        """Valida se o CPF já está cadastrado."""
         cpf = self.cleaned_data.get("cpf")
         if cpf and PerfilUsuarioEstendido.objects.filter(cpf=cpf).exists():
-            raise ValidationError("Este CPF já está cadastrado.")
+            msg = "Este CPF já está cadastrado."
+            raise ValidationError(msg)
         return cpf
 
-    def save(self, commit=True):
+    def save(self, *, commit: bool = True) -> AbstractUser:
+        """Salva o usuário e seu perfil estendido."""
         user = super().save(commit=False)
         user.email = self.cleaned_data["email"]
         user.first_name = self.cleaned_data["first_name"]
         user.last_name = self.cleaned_data["last_name"]
+        user.is_active = self.cleaned_data.get("is_active", True)
+
+        if self.request_user and getattr(self.request_user, "is_superuser", False):
+            user.is_staff = self.cleaned_data.get("is_staff", False)
+            user.is_superuser = self.cleaned_data.get("is_superuser", False)
 
         if commit:
             user.save()
-            # Garantir criação ou obtenção do perfil (signal deve criar; fallback por segurança)
+            # Atribuir grupos se fornecido e se o campo estiver presente
+            if "groups" in self.cleaned_data:
+                try:
+                    user.groups.set(self.cleaned_data.get("groups") or [])
+                except Exception:
+                    logger.exception("Falha ao atribuir grupos ao usuário %s", user.username)
             perfil, created = PerfilUsuarioEstendido.objects.get_or_create(
                 user=user,
                 defaults={
@@ -91,48 +179,53 @@ class UsuarioCreateForm(UserCreationForm):
                     "criado_por": self.request_user,
                 },
             )
-            # Atualizar campos caso perfil já existisse (ex: convite + criação manual)
             if not created:
-                campos_update = ["tipo_usuario", "cpf", "telefone", "celular", "cargo", "departamento"]
-                alterado = False
-                for campo in campos_update:
-                    novo_valor = self.cleaned_data.get(campo)
-                    if novo_valor and getattr(perfil, campo) != novo_valor:
-                        setattr(perfil, campo, novo_valor)
-                        alterado = True
-                if perfil.status != StatusUsuario.ATIVO:
-                    perfil.status = StatusUsuario.ATIVO
-                    alterado = True
-                if alterado:
-                    perfil.save()
+                self._atualizar_perfil_existente(perfil)
 
-            # Associar usuário ao tenant via TenantUser se tenant fornecido
             if self.tenant:
-                try:
-                    from core.models import TenantUser
-
-                    TenantUser.objects.get_or_create(tenant=self.tenant, user=user)
-                except Exception:
-                    # Fallback silencioso para evitar quebrar criação se modelo mudar
-                    pass
+                self._associar_tenant_user(user)
 
         return user
 
+    def _atualizar_perfil_existente(self, perfil: PerfilUsuarioEstendido) -> None:
+        """Atualiza os campos de um perfil de usuário existente."""
+        campos_update = ["tipo_usuario", "cpf", "telefone", "celular", "cargo", "departamento"]
+        alterado = False
+        for campo in campos_update:
+            novo_valor = self.cleaned_data.get(campo)
+            if novo_valor and getattr(perfil, campo) != novo_valor:
+                setattr(perfil, campo, novo_valor)
+                alterado = True
+        if perfil.status != StatusUsuario.ATIVO:
+            perfil.status = StatusUsuario.ATIVO
+            alterado = True
+        if alterado:
+            perfil.save()
+
+    def _associar_tenant_user(self, user: AbstractUser) -> None:
+        """Associa um usuário a um tenant."""
+        try:
+            tenant_user_model = apps.get_model("core", "TenantUser")
+            tenant_user_model.objects.get_or_create(tenant=self.tenant, user=user)
+        except Exception:
+            logger.exception("Falha ao associar TenantUser para o usuário %s", user.username)
+
 
 class UsuarioUpdateForm(forms.ModelForm):
-    """Formulário para atualização de usuários"""
+    """Formulário para atualização de usuários."""
 
-    # Campos do User
-    first_name = forms.CharField(max_length=30, required=True, label="Nome")
-    last_name = forms.CharField(max_length=30, required=True, label="Sobrenome")
-    email = forms.EmailField(required=True, label="E-mail")
-    is_active = forms.BooleanField(required=False, label="Usuário Ativo")
-    is_staff = forms.BooleanField(required=False, label="Acesso Staff")
-    is_superuser = forms.BooleanField(required=False, label="Superusuário")
+    first_name: ClassVar[forms.CharField] = forms.CharField(max_length=30, required=True, label="Nome")
+    last_name: ClassVar[forms.CharField] = forms.CharField(max_length=30, required=True, label="Sobrenome")
+    email: ClassVar[forms.EmailField] = forms.EmailField(required=True, label="E-mail")
+    is_active: ClassVar[forms.BooleanField] = forms.BooleanField(required=False, label="Usuário Ativo")
+    is_staff: ClassVar[forms.BooleanField] = forms.BooleanField(required=False, label="Acesso Staff")
+    is_superuser: ClassVar[forms.BooleanField] = forms.BooleanField(required=False, label="Superusuário")
 
     class Meta:
+        """Meta opções para o formulário de atualização de usuário."""
+
         model = PerfilUsuarioEstendido
-        fields = [
+        fields: ClassVar[list[str]] = [
             "avatar",
             "tipo_usuario",
             "status",
@@ -157,19 +250,27 @@ class UsuarioUpdateForm(forms.ModelForm):
             "receber_sms_notificacoes",
             "receber_push_notificacoes",
         ]
-        widgets = {
+        widgets: ClassVar[dict[str, forms.Widget]] = {
             "data_nascimento": forms.DateInput(attrs={"type": "date"}),
             "data_admissao": forms.DateInput(attrs={"type": "date"}),
             "salario": forms.NumberInput(attrs={"step": "0.01"}),
             "avatar": forms.FileInput(attrs={"accept": "image/*"}),
         }
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args: Any, **kwargs: Any) -> None:  # noqa: ANN401
+        """Inicializa o formulário de atualização com dados do usuário/perfil."""
         self.request_user = kwargs.pop("request_user", None)
         self.tenant = kwargs.pop("tenant", None)
         super().__init__(*args, **kwargs)
 
-        # Preencher campos do User
+        self._preencher_campos_iniciais()
+        self._restringir_opcoes_tipo_usuario()
+        self._aplicar_estilos_css()
+        self._desabilitar_campos_privilegiados()
+        self._desabilitar_campos_funcionario()
+
+    def _preencher_campos_iniciais(self) -> None:
+        """Preenche os campos do formulário com os dados iniciais do usuário."""
         if self.instance and self.instance.user:
             self.fields["first_name"].initial = self.instance.user.first_name
             self.fields["last_name"].initial = self.instance.user.last_name
@@ -178,59 +279,68 @@ class UsuarioUpdateForm(forms.ModelForm):
             self.fields["is_staff"].initial = self.instance.user.is_staff
             self.fields["is_superuser"].initial = self.instance.user.is_superuser
 
-        # Limitar as opções de tipo de usuário
+    def _restringir_opcoes_tipo_usuario(self) -> None:
+        """Restringe as opções de tipo de usuário para não superusuários."""
         if self.request_user and not self.request_user.is_superuser:
             self.fields["tipo_usuario"].choices = [
                 (k, v) for k, v in TipoUsuario.choices if k not in [TipoUsuario.SUPER_ADMIN, TipoUsuario.ADMIN_EMPRESA]
             ]
-            # Impede que um admin de empresa edite um usuário para um tipo que ele não pode gerenciar
             if self.instance.tipo_usuario in [TipoUsuario.SUPER_ADMIN, TipoUsuario.ADMIN_EMPRESA]:
                 self.fields["tipo_usuario"].disabled = True
 
-        # Adicionar classes CSS
-        for _field_name, field in self.fields.items():
+    def _aplicar_estilos_css(self) -> None:
+        """Aplica classes CSS aos campos do formulário."""
+        for field in self.fields.values():
             if isinstance(field.widget, forms.CheckboxInput):
                 field.widget.attrs["class"] = "form-check-input"
             else:
                 field.widget.attrs["class"] = "form-control"
-        # Gating: somente superuser pode editar is_staff/is_superuser; para outros desabilitar
+
+    def _desabilitar_campos_privilegiados(self) -> None:
+        """Desabilita campos que só podem ser editados por superusuários."""
         if not (self.request_user and self.request_user.is_superuser):
             for fname in ["is_staff", "is_superuser"]:
                 if fname in self.fields:
                     self.fields[fname].disabled = True
 
-        # Read-only cargo/salario se houver vínculo Funcionario
-        if Funcionario and self.instance and getattr(self.instance, "user", None):
+    def _desabilitar_campos_funcionario(self) -> None:
+        """Desabilita campos relacionados a funcionário se houver vínculo."""
+        if FuncionarioModel and self.instance and getattr(self.instance, "user", None):
             try:
-                if Funcionario.objects.filter(user=self.instance.user).exists():
+                if FuncionarioModel.objects.filter(user=self.instance.user).exists():
                     for fname in ["cargo", "salario"]:
                         if fname in self.fields:
                             self.fields[fname].disabled = True
-            except Exception:
+            except FuncionarioModel.DoesNotExist:
                 pass
+            except Exception:
+                logger.exception("Falha ao verificar vínculo com Funcionário.")
 
-    def clean_email(self):
+    def clean_email(self) -> str:
+        """Valida se o e-mail já está em uso por outro usuário."""
         email = self.cleaned_data["email"]
         if User.objects.filter(email=email).exclude(pk=self.instance.user.pk).exists():
-            raise ValidationError("Este e-mail já está em uso.")
+            msg = "Este e-mail já está em uso."
+            raise ValidationError(msg)
         return email
 
-    def clean_cpf(self):
+    def clean_cpf(self) -> str | None:
+        """Valida se o CPF já está cadastrado para outro usuário."""
         cpf = self.cleaned_data.get("cpf")
         if cpf and PerfilUsuarioEstendido.objects.filter(cpf=cpf).exclude(pk=self.instance.pk).exists():
-            raise ValidationError("Este CPF já está cadastrado.")
+            msg = "Este CPF já está cadastrado."
+            raise ValidationError(msg)
         return cpf
 
-    def save(self, commit=True):
+    def save(self, *, commit: bool = True) -> PerfilUsuarioEstendido:
+        """Salva o perfil e os dados do usuário associado."""
         perfil = super().save(commit=False)
-
-        # Atualizar campos do User
         user = perfil.user
         user.first_name = self.cleaned_data["first_name"]
         user.last_name = self.cleaned_data["last_name"]
         user.email = self.cleaned_data["email"]
         user.is_active = self.cleaned_data["is_active"]
-        # Atualizar flags de privilégio somente se superuser
+
         if self.request_user and self.request_user.is_superuser:
             user.is_staff = self.cleaned_data.get("is_staff", user.is_staff)
             user.is_superuser = self.cleaned_data.get("is_superuser", user.is_superuser)
@@ -243,41 +353,47 @@ class UsuarioUpdateForm(forms.ModelForm):
 
 
 class ConviteUsuarioForm(forms.ModelForm):
-    """Formulário para envio de convites"""
+    """Formulário para envio de convites de usuário."""
 
     class Meta:
+        """Meta opções para o formulário de convite."""
+
         model = ConviteUsuario
-        fields = ["email", "tipo_usuario", "nome_completo", "cargo", "departamento", "mensagem_personalizada"]
-        widgets = {
+        fields: ClassVar[list[str]] = [
+            "email",
+            "tipo_usuario",
+            "nome_completo",
+            "cargo",
+            "departamento",
+            "mensagem_personalizada",
+        ]
+        widgets: ClassVar[dict[str, forms.Widget]] = {
             "mensagem_personalizada": forms.Textarea(attrs={"rows": 4}),
         }
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args: Any, **kwargs: Any) -> None:  # noqa: ANN401
+        """Inicializa o formulário de convite com tenant e usuário da requisição."""
         self.tenant = kwargs.pop("tenant", None)
         self.request_user = kwargs.pop("request_user", None)
         super().__init__(*args, **kwargs)
 
-        # Adicionar classes CSS
-        for _field_name, field in self.fields.items():
+        for field in self.fields.values():
             field.widget.attrs["class"] = "form-control"
 
-    def clean_email(self):
+    def clean_email(self) -> str:
+        """Valida o e-mail do convite."""
         email = self.cleaned_data["email"]
-
-        # Verificar se já existe usuário com este email
         if User.objects.filter(email=email).exists():
-            raise ValidationError("Já existe um usuário cadastrado com este e-mail.")
-
-        # Verificar se já existe convite pendente
+            msg = "Já existe um usuário cadastrado com este e-mail."
+            raise ValidationError(msg)
         if ConviteUsuario.objects.filter(email=email, usado=False, tenant=self.tenant).exists():
-            raise ValidationError("Já existe um convite pendente para este e-mail neste tenant.")
-
+            msg = "Já existe um convite pendente para este e-mail neste tenant."
+            raise ValidationError(msg)
         return email
 
-    def save(self, commit=True):
+    def save(self, *, commit: bool = True) -> ConviteUsuario:
+        """Salva o convite de usuário."""
         convite = super().save(commit=False)
-
-        # Definir data de expiração (7 dias)
         convite.expirado_em = timezone.now() + timedelta(days=7)
         convite.enviado_por = self.request_user
         convite.tenant = self.tenant
@@ -289,99 +405,183 @@ class ConviteUsuarioForm(forms.ModelForm):
 
 
 class PermissaoPersonalizadaForm(forms.ModelForm):
-    """Formulário para gerenciar permissões personalizadas"""
+    """Formulário para gerenciar permissões personalizadas."""
+
+    ACTION_CHOICES: ClassVar[list[tuple[str, str]]] = [
+        ("view", _("Visualizar")),
+        ("create", _("Criar")),
+        ("update", _("Atualizar")),
+        ("delete", _("Excluir")),
+        ("export", _("Exportar")),
+        ("approve", _("Aprovar")),
+        ("custom", _("Personalizada")),
+    ]
 
     class Meta:
+        """Meta opções para o formulário de permissão."""
+
         model = PermissaoPersonalizada
-        fields = ["user", "scope_tenant", "modulo", "acao", "recurso", "concedida", "data_expiracao", "observacoes"]
-        widgets = {
+        fields: ClassVar[list[str]] = [
+            "user",
+            "scope_tenant",
+            "modulo",
+            "acao",
+            "recurso",
+            "concedida",
+            "data_expiracao",
+            "observacoes",
+        ]
+        widgets: ClassVar[dict[str, forms.Widget]] = {
             "data_expiracao": forms.DateTimeInput(attrs={"type": "datetime-local"}),
             "observacoes": forms.Textarea(attrs={"rows": 3}),
         }
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args: Any, **kwargs: Any) -> None:  # noqa: ANN401
+        """Inicializa o formulário de permissão com escopo de tenant."""
         self.tenant = kwargs.pop("tenant", None)
+        self.request_user = kwargs.pop("request_user", None)
         super().__init__(*args, **kwargs)
 
-        # Campo scope_tenant opcional (quando não informado => permissão global)
-        if "scope_tenant" in self.fields:
-            from core.models import Tenant
+        self._configure_module_field()
+        self._configure_action_field()
 
+        if "scope_tenant" in self.fields:
+            tenant_model = apps.get_model("core", "Tenant")
             if self.tenant:
-                # Limita escolha ao tenant atual (consistente com contexto)
-                self.fields["scope_tenant"].queryset = Tenant.objects.filter(pk=self.tenant.pk)
+                self.fields["scope_tenant"].queryset = tenant_model.objects.filter(pk=self.tenant.pk)
                 self.fields["scope_tenant"].initial = self.tenant
             else:
-                self.fields["scope_tenant"].queryset = Tenant.objects.all()
+                self.fields["scope_tenant"].queryset = tenant_model.objects.all()
                 self.fields["scope_tenant"].required = False
 
-        # Filtrar usuários pelo tenant atual ou todos se superuser sem tenant ativo
         if self.tenant:
-            self.fields["user"].queryset = self.tenant.user_set.all()
+            # Limitar usuários ao tenant atual via vínculo TenantUser
+            try:
+                TenantUser = apps.get_model("core", "TenantUser")
+                user_ids = TenantUser.objects.filter(tenant=self.tenant).values_list("user_id", flat=True)
+                self.fields["user"].queryset = User.objects.filter(id__in=list(user_ids))
+            except LookupError:
+                # Fallback defensivo quando o app/core ainda não está disponível
+                self.fields["user"].queryset = User.objects.none()
+            except Exception:
+                logger.exception("Falha ao filtrar usuários por tenant")
+                self.fields["user"].queryset = User.objects.none()
         else:
+            # Fallback: todos usuários (usado apenas por superusuário sem tenant)
             self.fields["user"].queryset = User.objects.all()
 
-        # Adicionar classes CSS
-        for _field_name, field in self.fields.items():
+        for field in self.fields.values():
             if isinstance(field.widget, forms.CheckboxInput):
                 field.widget.attrs["class"] = "form-check-input"
+            elif isinstance(field.widget, forms.Select):
+                field.widget.attrs["class"] = "form-select"
             elif isinstance(field.widget, forms.Textarea):
                 field.widget.attrs["class"] = "form-control"
             else:
                 field.widget.attrs["class"] = "form-control"
 
-    def clean(self):
+    def _configure_module_field(self) -> None:
+        """Ajusta o campo de módulo com opções disponíveis e labels em português."""
+        if "modulo" not in self.fields:
+            return
+        available_choices = get_all_module_choices()
+        label_map = dict(available_choices)
+
+        tenant_codes: set[str] = set()
+        if self.tenant is not None:
+            modules_data = getattr(self.tenant, "modules", {})
+            module_list: list[str] = []
+            if isinstance(modules_data, dict):
+                module_list = list(modules_data.get("modules", []) or [])
+            elif isinstance(modules_data, (list, tuple)):
+                module_list = list(modules_data)
+            for code in module_list:
+                if code:
+                    tenant_codes.add(str(code))
+
+        prioritized: list[tuple[str, str]] = []
+        for code in sorted(tenant_codes, key=lambda c: label_map.get(c, c.upper())):
+            label = label_map.get(code) or code.replace("_", " ").title()
+            prioritized.append((code, label))
+
+        missing_codes = [code for code in tenant_codes if code not in label_map]
+        for code in missing_codes:
+            label_map[code] = code.replace("_", " ").title()
+
+        remaining = [(code, label) for code, label in available_choices if code not in tenant_codes]
+        combined = prioritized + [(code, label_map.get(code, label)) for code, label in remaining]
+
+        choices = [("", _("Selecione um módulo")), *combined]
+
+        field = self.fields["modulo"]
+        field.widget = forms.Select(choices=choices)
+        field.widget.attrs.setdefault("aria-label", str(field.label or _("Módulo")))
+        field.help_text = _("Escolha o módulo que receberá esta permissão.")
+
+    def _configure_action_field(self) -> None:
+        """Define opções sugeridas para o campo de ação em português."""
+        if "acao" not in self.fields:
+            return
+
+        choices = [("", _("Selecione uma ação")), *self.ACTION_CHOICES]
+        field = self.fields["acao"]
+        field.widget = forms.Select(choices=choices)
+        field.widget.attrs.setdefault("aria-label", str(field.label or _("Ação")))
+        field.help_text = _("Selecione o tipo de ação (ex.: Visualizar, Criar, Atualizar).")
+
+    def clean(self) -> dict[str, Any]:
+        """Valida os dados do formulário para evitar permissões duplicadas."""
         data = super().clean()
-        # Evitar duplicados: se já existir permissão igual, bloquear criação
         user = data.get("user")
         modulo = data.get("modulo")
         acao = data.get("acao")
         recurso = data.get("recurso") or None
         scope_tenant = data.get("scope_tenant") or None
+
         if user and modulo and acao:
             qs = PermissaoPersonalizada.objects.filter(
-                user=user, modulo=modulo, acao=acao, recurso=recurso, scope_tenant=scope_tenant
+                user=user,
+                modulo=modulo,
+                acao=acao,
+                recurso=recurso,
+                scope_tenant=scope_tenant,
             )
             if self.instance.pk:
                 qs = qs.exclude(pk=self.instance.pk)
             if qs.exists():
-                self.add_error(None, "Já existe uma permissão com estes parâmetros (mesmo escopo).")
-        return data
+                msg = "Já existe uma permissão com estes parâmetros (mesmo escopo)."
+                raise ValidationError(msg)
         return data
 
 
 class FiltroUsuarioForm(forms.Form):
-    """Formulário para filtrar usuários"""
+    """Formulário para filtrar a lista de usuários."""
 
-    busca = forms.CharField(
+    busca: ClassVar[forms.CharField] = forms.CharField(
         max_length=100,
         required=False,
         label="Buscar",
         widget=forms.TextInput(attrs={"placeholder": "Nome, email, CPF...", "class": "form-control"}),
     )
-
-    tipo_usuario = forms.ChoiceField(
-        choices=[("", "Todos os tipos")] + list(TipoUsuario.choices),
+    tipo_usuario: ClassVar[forms.ChoiceField] = forms.ChoiceField(
+        choices=[("", "Todos os tipos"), *list(TipoUsuario.choices)],
         required=False,
         label="Tipo de Usuário",
         widget=forms.Select(attrs={"class": "form-control"}),
     )
-
-    status = forms.ChoiceField(
-        choices=[("", "Todos os status")] + list(StatusUsuario.choices),
+    status: ClassVar[forms.ChoiceField] = forms.ChoiceField(
+        choices=[("", "Todos os status"), *list(StatusUsuario.choices)],
         required=False,
         label="Status",
         widget=forms.Select(attrs={"class": "form-control"}),
     )
-
-    departamento = forms.CharField(
+    departamento: ClassVar[forms.CharField] = forms.CharField(
         max_length=100,
         required=False,
         label="Departamento",
         widget=forms.TextInput(attrs={"placeholder": "Departamento...", "class": "form-control"}),
     )
-
-    ativo = forms.ChoiceField(
+    ativo: ClassVar[forms.ChoiceField] = forms.ChoiceField(
         choices=[("", "Todos"), ("true", "Ativos"), ("false", "Inativos")],
         required=False,
         label="Usuário Ativo",
@@ -390,16 +590,17 @@ class FiltroUsuarioForm(forms.Form):
 
 
 class MeuPerfilForm(forms.ModelForm):
-    """Formulário para o usuário editar seu próprio perfil"""
+    """Formulário para o usuário editar seu próprio perfil."""
 
-    # Campos do User
-    first_name = forms.CharField(max_length=30, required=True, label="Nome")
-    last_name = forms.CharField(max_length=30, required=True, label="Sobrenome")
-    email = forms.EmailField(required=True, label="E-mail")
+    first_name: ClassVar[forms.CharField] = forms.CharField(max_length=30, required=True, label="Nome")
+    last_name: ClassVar[forms.CharField] = forms.CharField(max_length=30, required=True, label="Sobrenome")
+    email: ClassVar[forms.EmailField] = forms.EmailField(required=True, label="E-mail")
 
     class Meta:
+        """Meta opções para o formulário 'Meu Perfil'."""
+
         model = PerfilUsuarioEstendido
-        fields = [
+        fields: ClassVar[list[str]] = [
             "avatar",
             "cpf",
             "rg",
@@ -419,31 +620,29 @@ class MeuPerfilForm(forms.ModelForm):
             "receber_sms_notificacoes",
             "receber_push_notificacoes",
         ]
-        widgets = {
+        widgets: ClassVar[dict[str, forms.Widget]] = {
             "data_nascimento": forms.DateInput(attrs={"type": "date"}),
             "avatar": forms.FileInput(attrs={"accept": "image/*"}),
         }
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args: Any, **kwargs: Any) -> None:  # noqa: ANN401
+        """Inicializa o formulário 'Meu Perfil' preenchendo os dados do usuário."""
         super().__init__(*args, **kwargs)
 
-        # Preencher campos do User
         if self.instance and self.instance.user:
             self.fields["first_name"].initial = self.instance.user.first_name
             self.fields["last_name"].initial = self.instance.user.last_name
             self.fields["email"].initial = self.instance.user.email
 
-        # CPF somente leitura se já definido (permitir primeiro cadastro caso vazio)
         if self.instance and self.instance.cpf:
             self.fields["cpf"].widget.attrs["readonly"] = True
         else:
             self.fields["cpf"].widget.attrs["placeholder"] = "XXX.XXX.XXX-XX"
 
-    def save(self, commit=True):
-        """Salva tanto o User quanto o PerfilUsuarioEstendido"""
+    def save(self, *, commit: bool = True) -> PerfilUsuarioEstendido:
+        """Salva tanto o User quanto o PerfilUsuarioEstendido."""
         perfil = super().save(commit=False)
 
-        # Atualizar campos do User
         if perfil.user:
             perfil.user.first_name = self.cleaned_data["first_name"]
             perfil.user.last_name = self.cleaned_data["last_name"]
