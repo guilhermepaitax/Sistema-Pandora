@@ -19,6 +19,10 @@ console_command = 'python manage.py shell'
   PORT = '8080'
   # Usa Gunicorn via entrypoint (evita burlar migrações/superuser)
   USE_GUNICORN = '1'
+  # Usar SQLite temporário no volume persistente
+  PANDORA_DB_FILE = '/data/db.sqlite3'
+  # Permitir SQLite com DEBUG=False (temporário)
+  ALLOW_SQLITE_PROD = '1'
 
 #[processes]
 # Não definimos processos customizados para não pular o entrypoint.sh
@@ -44,6 +48,6 @@ console_command = 'python manage.py shell'
   url_prefix = '/static/'
 
 # Volume persistente para dados (ex.: SQLite em produção temporária)
-[mounts]
-  source = 'data'
-  destination = '/data'
+[[mounts]]
+  source = "data"
+  destination = "/data"
