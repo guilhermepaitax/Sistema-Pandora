@@ -42,3 +42,8 @@ console_command = 'python manage.py shell'
   # Arquivos estáticos coletados em build para este caminho
   guest_path = '/app/staticfiles_collected'
   url_prefix = '/static/'
+
+# Volume persistente para dados (ex.: SQLite em produção temporária)
+[mounts]
+  source = 'data'
+  destination = '/data'
