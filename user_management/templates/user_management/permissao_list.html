@@ -1,220 +1,360 @@
-{% extends "pandora_ultra_modern_base.html" %}
-{% load static %}
+{% extends "pandora_list_ultra_modern.html" %}
+{% load static permissions_extras core_tags %}
 
 {% block title %}Permissões - Pandora ERP{% endblock %}
 
-{% block page_title %}Gerenciamento de Permissões{% endblock %}
-{% block page_subtitle %}Controle de permissões e grupos de usuários{% endblock %}
+{% block page_title %}Permissões{% endblock %}
+{% block page_subtitle %}Gerencie permissões personalizadas, grupos e privilégios padrão do Pandora{% endblock %}
 
-{% block page_actions %}
-<div class="d-flex gap-3 align-items-center">
-    <a href="{% url 'user_management:permissao_create' %}" class="btn btn-primary">
-        <i class="fas fa-plus-lg"></i>
-        <span class="d-none d-md-inline">Nova Permissão</span>
-    </a>
-    
-    <div class="dropdown">
-        <button class="btn btn-outline-secondary dropdown-toggle" type="button" data-bs-toggle="dropdown">
-            <i class="fas fa-cog"></i>
-            <span class="d-none d-md-inline">Configurar</span>
-        </button>
-        <ul class="dropdown-menu">
-            <li><a class="dropdown-item" href="#" onclick="syncPermissions()">
-                <i class="fas fa-sync-alt"></i> Sincronizar Permissões
-            </a></li>
-            <li><a class="dropdown-item" href="#" onclick="exportPermissions()">
-                <i class="fas fa-download"></i> Exportar Configurações
-            </a></li>
-        </ul>
+{% block add_url %}{% url 'user_management:permissao_create' %}{% endblock %}
+
+{% block table_content %}
+<div class="permission-dashboard">
+    <div class="row g-3 mb-4">
+        <div class="col-12 col-md-4">
+            <div class="metric-card shadow-sm h-100">
+                <div class="metric-icon bg-gradient-primary text-white">
+                    <i class="fas fa-key"></i>
+                </div>
+                <div class="metric-body">
+                    <p class="metric-label text-muted mb-1">Permissões personalizadas</p>
+                    <h3 class="metric-value mb-0">{{ page_obj.paginator.count|default:permissoes|length }}</h3>
+                    <small class="text-muted">Total concedido no tenant atual</small>
+                </div>
+            </div>
+        </div>
+        <div class="col-12 col-md-4">
+            <div class="metric-card shadow-sm h-100">
+                <div class="metric-icon bg-gradient-success text-white">
+                    <i class="fas fa-users-cog"></i>
+                </div>
+                <div class="metric-body">
+                    <p class="metric-label text-muted mb-1">Grupos ativos</p>
+                    <h3 class="metric-value mb-0">{{ groups|length }}</h3>
+                    <small class="text-muted">Grupos com permissões associadas</small>
+                </div>
+            </div>
+        </div>
+        <div class="col-12 col-md-4">
+            <div class="metric-card shadow-sm h-100">
+                <div class="metric-icon bg-gradient-info text-white">
+                    <i class="fas fa-shield-alt"></i>
+                </div>
+                <div class="metric-body">
+                    <p class="metric-label text-muted mb-1">Permissões do sistema</p>
+                    <h3 class="metric-value mb-0">{{ permissions|length }}</h3>
+                    <small class="text-muted">Permissões padrão do Django agrupadas por módulo</small>
+                </div>
+            </div>
+        </div>
     </div>
-</div>
-{% endblock %}
 
-{% block content %}
-<div class="container-fluid">
-    <div class="row">
-        <!-- Grupos de Usuários -->
-        <div class="col-12 col-lg-6">
-            <div class="card border-0 shadow-sm">
-                <div class="card-header bg-white">
-                    <div class="d-flex justify-content-between align-items-center">
-                        <h5 class="mb-0">Grupos de Usuários</h5>
-                        <button class="btn btn-sm btn-primary" onclick="createGroup()">
-                            <i class="fas fa-plus"></i> Novo Grupo
-                        </button>
+    <div id="search-container" class="collapse mb-4">
+        <div class="card shadow-sm border-0">
+            <div class="card-header bg-white py-3">
+                <h5 class="mb-0">
+                    <i class="fas fa-filter me-2 text-primary"></i>
+                    Filtro rápido de permissões personalizadas
+                </h5>
+            </div>
+            <div class="card-body">
+                <div class="row g-3">
+                    <div class="col-12 col-lg-6">
+                        <label class="form-label form-label-sm text-muted">Buscar por usuário, módulo ou anotação</label>
+                        <div class="input-group">
+                            <span class="input-group-text"><i class="fas fa-search"></i></span>
+                            <input type="search" class="form-control" id="customPermissionSearch" placeholder="Digite para filtrar a lista" autocomplete="off">
+                        </div>
+                    </div>
+                    <div class="col-12 col-lg-3">
+                        <label class="form-label form-label-sm text-muted">Módulo</label>
+                        <input type="text" class="form-control" id="filterModule" placeholder="Ex.: financeiro, estoque">
+                    </div>
+                    <div class="col-12 col-lg-3">
+                        <label class="form-label form-label-sm text-muted">Ação</label>
+                        <input type="text" class="form-control" id="filterAction" placeholder="Ex.: create, view, approve">
+                    </div>
+                    <div class="col-12">
+                        <div class="form-check form-switch mt-2">
+                            <input class="form-check-input" type="checkbox" id="filterActiveOnly">
+                            <label class="form-check-label text-muted" for="filterActiveOnly">Exibir apenas permissões ativas</label>
+                        </div>
                     </div>
                 </div>
+                <div class="form-text mt-3">Os filtros são aplicados instantaneamente nesta página.</div>
+            </div>
+        </div>
+    </div>
+
+    <div class="row g-4">
+        <div class="col-12 col-xl-8">
+            <div class="card shadow-sm border-0 h-100">
+                <div class="card-header bg-white py-3 d-flex flex-wrap gap-3 justify-content-between align-items-center">
+                    <div>
+                        <h5 class="mb-0">Permissões personalizadas</h5>
+                        <small class="text-muted">Concessões individuais por usuário e escopo</small>
+                    </div>
+                    <span class="badge bg-light text-primary fw-semibold">
+                        <i class="fas fa-stream me-2"></i>
+                        Atualizado em {% if permissoes %}{{ permissoes.0.data_concessao|date:"d/m/Y" }}{% else %}-{% endif %}
+                    </span>
+                </div>
+                {% if permissoes %}
+                <div class="table-responsive">
+                    <table class="table table-modern align-middle" id="custom-permissions-table">
+                        <thead class="table-light">
+                            <tr>
+                                <th>Usuário</th>
+                                <th>Escopo / Tenant</th>
+                                <th>Módulo</th>
+                                <th>Ação</th>
+                                <th>Recurso</th>
+                                <th>Status</th>
+                                <th>Desde</th>
+                                <th class="text-end">Anotações</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for permissao in permissoes %}
+                            <tr data-search="{{ permissao.user.get_full_name|default:permissao.user.username }} {{ permissao.modulo|default:'' }} {{ permissao.acao|default:'' }} {{ permissao.observacoes|default:'' }}" data-module="{{ permissao.modulo|default:'' }}" data-action="{{ permissao.acao|default:'' }}" data-active="{{ permissao.esta_ativa|yesno:"true,false" }}">
+                                <td>
+                                    <div class="d-flex align-items-center gap-3">
+                                        <div class="avatar-sm bg-primary bg-opacity-10 text-primary rounded-circle d-flex align-items-center justify-content-center">
+                                            <i class="fas fa-user"></i>
+                                        </div>
+                                        <div>
+                                            <div class="fw-semibold">{{ permissao.user.get_full_name|default:permissao.user.username }}</div>
+                                            <small class="text-muted">@{{ permissao.user.username }}</small>
+                                        </div>
+                                    </div>
+                                </td>
+                                <td>
+                                    {% if permissao.scope_tenant %}
+                                    <span class="badge bg-soft-primary text-primary">{{ permissao.scope_tenant }}</span>
+                                    {% else %}
+                                    <span class="badge bg-soft-secondary text-muted">Global</span>
+                                    {% endif %}
+                                </td>
+                                <td><span class="badge bg-light text-primary text-uppercase">{{ permissao.modulo }}</span></td>
+                                <td><span class="badge bg-soft-success text-success text-uppercase">{{ permissao.acao }}</span></td>
+                                <td>
+                                    {% if permissao.recurso %}
+                                    <span class="text-muted text-truncate d-inline-block" style="max-width: 180px;" title="{{ permissao.recurso }}">{{ permissao.recurso }}</span>
+                                    {% else %}
+                                    <span class="text-muted">—</span>
+                                    {% endif %}
+                                </td>
+                                <td>
+                                    {% if permissao.esta_ativa %}
+                                    <span class="badge rounded-pill bg-success-subtle text-success">
+                                        <i class="fas fa-check-circle me-1"></i> Ativa
+                                    </span>
+                                    {% else %}
+                                    <span class="badge rounded-pill bg-danger-subtle text-danger">
+                                        <i class="fas fa-ban me-1"></i> Inativa
+                                    </span>
+                                    {% endif %}
+                                </td>
+                                <td>
+                                    <small class="text-muted d-block">{{ permissao.data_concessao|date:"d/m/Y" }}</small>
+                                    <small class="text-muted">{{ permissao.data_concessao|date:"H:i" }}</small>
+                                </td>
+                                <td class="text-end">
+                                    {% if permissao.observacoes %}
+                                        <span class="badge bg-light text-secondary" data-bs-toggle="tooltip" title="{{ permissao.observacoes }}">Ver nota</span>
+                                    {% else %}
+                                        <span class="text-muted">—</span>
+                                    {% endif %}
+                                </td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+                {% else %}
+                <div class="empty-state p-5 text-center">
+                    <div class="empty-icon mb-3">
+                        <i class="fas fa-user-lock fa-3x text-muted"></i>
+                    </div>
+                    <h4 class="mb-2">Nenhuma permissão personalizada</h4>
+                    <p class="text-muted mb-3">Crie a primeira permissão personalizada para um usuário ou grupo de trabalho.</p>
+                    <a href="{% url 'user_management:permissao_create' %}" class="btn btn-primary">
+                        <i class="fas fa-plus me-2"></i>Conceder Permissão
+                    </a>
+                </div>
+                {% endif %}
+            </div>
+        </div>
+        <div class="col-12 col-xl-4">
+            <div class="card shadow-sm border-0 mb-4">
+                <div class="card-header bg-white py-3 d-flex justify-content-between align-items-center">
+                    <div>
+                        <h5 class="mb-0">Cobertura por grupo</h5>
+                        <small class="text-muted">Resumo de permissões aplicadas</small>
+                    </div>
+                    <button type="button" class="btn btn-sm btn-primary" id="open-group-permissions-modal" onclick="createGroup();">
+                        <i class="fas fa-user-shield me-1"></i>
+                        Permissões de grupos
+                    </button>
+                </div>
+                {% if groups %}
                 <div class="card-body p-0">
-                    <div class="list-group list-group-flush">
+                    <ul class="list-group list-group-flush">
                         {% for group in groups %}
-                        <div class="list-group-item">
-                            <div class="d-flex justify-content-between align-items-center">
-                                <div>
-                                    <h6 class="mb-1">{{ group.name }}</h6>
-                                    <small class="text-muted">
-                                        {{ group.user_set.count }} usuário{{ group.user_set.count|pluralize }} • 
-                                        {{ group.permissions.count }} permiss{{ group.permissions.count|pluralize:"ão,ões" }}
-                                    </small>
-                                </div>
-                                <div class="btn-group btn-group-sm">
-                                    <button class="btn btn-outline-primary" onclick="editGroup({{ group.id }})" title="Editar">
+                        {% with counts=group_app_counts|get_item:group.id %}
+                        <li class="list-group-item d-flex justify-content-between align-items-center">
+                            <div>
+                                <h6 class="mb-1">{{ group.name }}</h6>
+                                <small class="text-muted">{{ group.user_set.count }} usuário{{ group.user_set.count|pluralize }} • {{ group.permissions.count }} permissão{{ group.permissions.count|pluralize }}</small>
+                            </div>
+                            <div class="d-flex align-items-center gap-2">
+                                <span class="badge bg-primary bg-opacity-10 text-primary">
+                                    <i class="fas fa-th-list me-1"></i>
+                                    {% if counts %}{{ counts|length }}{% else %}0{% endif %} módulos
+                                </span>
+                                <div class="btn-group btn-group-sm" role="group">
+                                    <button type="button" class="btn btn-outline-primary" title="Editar grupo" onclick="editGroup({{ group.id }});">
                                         <i class="fas fa-pencil-alt"></i>
                                     </button>
-                                    <button class="btn btn-outline-info" onclick="viewGroupPermissions({{ group.id }})" title="Permissões">
-                                        <i class="fas fa-shield-check"></i>
-                                    </button>
-                                    <button class="btn btn-outline-danger" onclick="deleteGroup({{ group.id }})" title="Excluir">
+                                    <button type="button" class="btn btn-outline-danger" title="Excluir grupo" onclick="deleteGroup({{ group.id }});">
                                         <i class="fas fa-trash"></i>
                                     </button>
                                 </div>
                             </div>
-                        </div>
-                        {% empty %}
-                        <div class="list-group-item text-center py-4">
-                            <div class="text-muted">
-                                <i class="fas fa-users" style="font-size: 48px;"></i>
-                                <p class="mt-2 mb-0">Nenhum grupo encontrado</p>
-                            </div>
-                        </div>
+                        </li>
+                        {% endwith %}
                         {% endfor %}
-                    </div>
+                    </ul>
                 </div>
+                {% else %}
+                <div class="card-body text-center text-muted py-5">
+                    <i class="fas fa-users mb-3" style="font-size: 36px;"></i>
+                    <p class="mb-0">Nenhum grupo cadastrado.</p>
+                </div>
+                {% endif %}
             </div>
-        </div>
-        
-        <!-- Permissões do Sistema -->
-        <div class="col-12 col-lg-6">
-            <div class="card border-0 shadow-sm">
-                <div class="card-header bg-white">
-                    <div class="d-flex justify-content-between align-items-center">
-                        <h5 class="mb-0">Permissões do Sistema</h5>
-                        <input type="search" class="form-control form-control-sm" style="max-width: 200px;" placeholder="Buscar permissões..." id="search-permissions">
-                    </div>
+
+            <div class="card shadow-sm border-0">
+                <div class="card-header bg-white py-3">
+                    <h5 class="mb-0">Dicas rápidas</h5>
                 </div>
-                <div class="card-body p-0">
-                    <div class="table-responsive" style="max-height: 500px; overflow-y: auto;">
-                        <table class="table table-sm table-hover mb-0" id="permissions-table">
-                            <thead class="table-light sticky-top">
-                                <tr>
-                                    <th>Módulo</th>
-                                    <th>Permissão</th>
-                                    <th>Código</th>
-                                    <th class="text-center">Grupos</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                {% regroup permissions by content_type.app_label as permissions_by_app %}
-                                {% for app in permissions_by_app %}
-                                {% for permission in app.list %}
-                                <tr>
-                                    <td>
-                                        <span class="badge bg-secondary">{{ app.grouper|upper }}</span>
-                                    </td>
-                                    <td>{{ permission.name }}</td>
-                                    <td>
-                                        <code class="small">{{ permission.codename }}</code>
-                                    </td>
-                                    <td class="text-center">
-                                        <span class="badge bg-info">{{ permission.group_set.count }}</span>
-                                    </td>
-                                </tr>
-                                {% endfor %}
-                                {% endfor %}
-                            </tbody>
-                        </table>
-                    </div>
+                <div class="card-body">
+                    <ul class="list-unstyled mb-0 small text-muted d-grid gap-2">
+                        <li><i class="fas fa-lightbulb text-warning me-2"></i>Use o filtro rápido para localizar permissões específicas.</li>
+                        <li><i class="fas fa-sync text-info me-2"></i>Sincronize permissões padrão após instalar novos módulos.</li>
+                        <li><i class="fas fa-users text-primary me-2"></i>Distribua permissões por grupos para acelerar o onboarding.</li>
+                    </ul>
                 </div>
             </div>
         </div>
     </div>
-    
-    <!-- Matriz de Permissões -->
-    <div class="row mt-4">
-        <div class="col-12">
-            <div class="card border-0 shadow-sm">
-                <div class="card-header bg-white">
-                    <h5 class="mb-0">Matriz de Permissões por Grupo</h5>
-                </div>
-                <div class="card-body">
-                    <div class="table-responsive">
-                        <table class="table table-sm table-hover">
-                            <thead>
-                                <tr>
-                                    <th>Módulo</th>
-                                    {% for group in groups %}
-                                    <th class="text-center" style="min-width: 100px;">{{ group.name }}</th>
-                                    {% endfor %}
-                                </tr>
-                            </thead>
-                            <tbody>
-                                {% regroup permissions by content_type.app_label as permissions_by_app %}
-                                {% for app in permissions_by_app %}
-                                <tr>
-                                    <td class="fw-bold">{{ app.grouper|upper }}</td>
-                                    {% for group in groups %}
-                                    <td class="text-center">
+
+    <div class="card shadow-sm border-0 mt-4">
+        <div class="card-header bg-white py-3">
+            <h5 class="mb-0">Catálogo de permissões do sistema</h5>
+            <small class="text-muted">Permissões padrão Django agrupadas por aplicação</small>
+        </div>
+        <div class="card-body p-0">
+            {% regroup permissions by content_type.app_label as permissions_by_app %}
+            <div class="accordion accordion-flush" id="appPermissionAccordion">
+                {% for app in permissions_by_app %}
+                <div class="accordion-item">
+                    <h2 class="accordion-header" id="heading-{{ app.grouper }}">
+                        <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#collapse-{{ app.grouper }}" aria-expanded="false" aria-controls="collapse-{{ app.grouper }}">
+                            <span class="flex-grow-1">{{ app.grouper|app_verbose_name }}</span>
+                            <span class="badge bg-light text-primary ms-3">{{ app.list|length }}</span>
+                        </button>
+                    </h2>
+                    <div id="collapse-{{ app.grouper }}" class="accordion-collapse collapse" data-bs-parent="#appPermissionAccordion">
+                        <div class="accordion-body p-0">
+                            <div class="table-responsive">
+                                <table class="table table-sm table-striped mb-0">
+                                    <thead class="table-light">
+                                        <tr>
+                                            <th>Permissão</th>
+                                            <th>Código</th>
+                                            <th class="text-end">Grupos que possuem</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
                                         {% for permission in app.list %}
-                                        {% if permission in group.permissions.all %}
-                                        <i class="fas fa-check-circle text-success" title="{{ permission.name }}"></i>
-                                        {% endif %}
+                                        <tr>
+                                            <td>{{ permission|permission_label }}</td>
+                                            <td><code>{{ permission.codename }}</code></td>
+                                            <td class="text-end">
+                                                <span class="badge bg-primary bg-opacity-10 text-primary">{{ permission.group_set.count }}</span>
+                                            </td>
+                                        </tr>
                                         {% endfor %}
-                                        <div class="mt-1">
-                                            <small class="text-muted">
-                                                {% with group_perms=group.permissions.all|filter_by_app:app.grouper %}
-                                                {{ group_perms|length }}/{{ app.list|length }}
-                                                {% endwith %}
-                                            </small>
-                                        </div>
-                                    </td>
-                                    {% endfor %}
-                                </tr>
-                                {% endfor %}
-                            </tbody>
-                        </table>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
                     </div>
                 </div>
+                {% empty %}
+                <div class="p-5 text-center text-muted">
+                    <i class="fas fa-inbox fa-2x mb-3"></i>
+                    <p class="mb-0">Nenhuma permissão do sistema encontrada.</p>
+                </div>
+                {% endfor %}
             </div>
         </div>
     </div>
 </div>
-
-<!-- Modal para Criar/Editar Grupo -->
-<div class="modal fade" id="groupModal" tabindex="-1">
-    <div class="modal-dialog">
+{# Modal de gerenciamento de permissões por grupo (baseado na interface anterior) #}
+<div class="modal fade" id="groupModal" tabindex="-1" aria-labelledby="groupModalTitle" aria-hidden="true">
+    <div class="modal-dialog modal-lg modal-dialog-scrollable">
         <div class="modal-content">
             <div class="modal-header">
                 <h5 class="modal-title" id="groupModalTitle">Novo Grupo</h5>
-                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Fechar"></button>
             </div>
-            <form id="groupForm">
+            <form id="groupForm" class="needs-validation" novalidate>
+                {% csrf_token %}
                 <div class="modal-body">
                     <div class="mb-3">
                         <label for="groupName" class="form-label">Nome do Grupo</label>
                         <input type="text" class="form-control" id="groupName" required>
+                        <div class="invalid-feedback">Informe um nome para o grupo.</div>
                     </div>
                     <div class="mb-3">
-                        <label class="form-label">Permissões</label>
-                        <div class="border rounded p-3" style="max-height: 300px; overflow-y: auto;">
-                            {% regroup permissions by content_type.app_label as permissions_by_app %}
-                            {% for app in permissions_by_app %}
-                            <div class="mb-3">
-                                <h6 class="text-primary">{{ app.grouper|upper }}</h6>
-                                {% for permission in app.list %}
-                                <div class="form-check">
-                                    <input class="form-check-input" type="checkbox" value="{{ permission.id }}" id="perm_{{ permission.id }}">
-                                    <label class="form-check-label" for="perm_{{ permission.id }}">
-                                        {{ permission.name }}
-                                    </label>
+                        <label class="form-label">Permissões vinculadas</label>
+                        <div class="border rounded p-3" style="max-height: 320px; overflow-y: auto;">
+                            {% regroup permissions by content_type.app_label as modal_permissions_by_app %}
+                            {% for app in modal_permissions_by_app %}
+                            <div class="mb-3 module-section" data-module="{{ app.grouper }}">
+                                <div class="d-flex justify-content-between align-items-center mb-2">
+                                    <h6 class="text-primary text-uppercase small fw-semibold mb-0">{{ app.grouper|app_verbose_name }}</h6>
+                                    <div class="form-check form-switch m-0">
+                                        <input class="form-check-input module-toggle" type="checkbox" id="toggle_{{ app.grouper|slugify }}" data-module="{{ app.grouper }}">
+                                        <label class="form-check-label small text-muted" for="toggle_{{ app.grouper|slugify }}">Selecionar todos</label>
+                                    </div>
                                 </div>
-                                {% endfor %}
+                                <div class="row g-2">
+                                    {% for permission in app.list %}
+                                    <div class="col-12 col-lg-6">
+                                        <div class="form-check">
+                                            <input class="form-check-input perm-checkbox" type="checkbox" value="{{ permission.id }}" id="perm_{{ permission.id }}" data-module="{{ app.grouper }}">
+                                            <label class="form-check-label" for="perm_{{ permission.id }}">
+                                                <strong>{{ permission|permission_label }}</strong>
+                                                <span class="d-block text-muted small">{{ permission.codename }}</span>
+                                            </label>
+                                        </div>
+                                    </div>
+                                    {% endfor %}
+                                </div>
                             </div>
                             {% endfor %}
                         </div>
+                        <div class="form-text">Selecione as permissões que o grupo deverá receber.</div>
                     </div>
                 </div>
                 <div class="modal-footer">
-                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancelar</button>
-                    <button type="submit" class="btn btn-primary">Salvar</button>
+                    <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancelar</button>
+                    <button type="submit" class="btn btn-primary">
+                        <i class="fas fa-save me-2"></i>Salvar grupo
+                    </button>
                 </div>
             </form>
         </div>
@@ -222,148 +362,337 @@
 </div>
 {% endblock %}
 
-{% block extra_js %}
-<script>
-let currentGroupId = null;
-
-// Busca em tempo real nas permissões
-document.getElementById('search-permissions').addEventListener('input', function() {
-    const filter = this.value.toLowerCase();
-    const rows = document.querySelectorAll('#permissions-table tbody tr');
-    
-    rows.forEach(row => {
-        const text = row.textContent.toLowerCase();
-        row.style.display = text.includes(filter) ? '' : 'none';
-    });
-});
-
-// Criar novo grupo
-function createGroup() {
-    currentGroupId = null;
-    document.getElementById('groupModalTitle').textContent = 'Novo Grupo';
-    document.getElementById('groupForm').reset();
-    
-    const modal = new bootstrap.Modal(document.getElementById('groupModal'));
-    modal.show();
+{% block extra_css %}
+<style>
+.permission-dashboard .metric-card {
+    border-radius: 18px;
+    background: #fff;
+    padding: 1.25rem;
 }
-
-// Editar grupo existente
-function editGroup(groupId) {
-    currentGroupId = groupId;
-    document.getElementById('groupModalTitle').textContent = 'Editar Grupo';
-    
-    // Carregar dados do grupo
-    fetch(`/user-management/groups/${groupId}/`)
-        .then(response => response.json())
-        .then(data => {
-            document.getElementById('groupName').value = data.name;
-            
-            // Marcar permissões
-            data.permissions.forEach(permId => {
-                const checkbox = document.getElementById(`perm_${permId}`);
-                if (checkbox) checkbox.checked = true;
-            });
-            
-            const modal = new bootstrap.Modal(document.getElementById('groupModal'));
-            modal.show();
-        })
-        .catch(error => {
-            alert('Erro ao carregar dados do grupo');
-        });
+.permission-dashboard .metric-icon {
+    width: 56px;
+    height: 56px;
+    border-radius: 16px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 1.35rem;
+    margin-bottom: 1rem;
 }
-
-// Visualizar permissões do grupo
-function viewGroupPermissions(groupId) {
-    // Implementar visualização de permissões
-    alert('Funcionalidade de visualização de permissões em desenvolvimento');
+.permission-dashboard .metric-value {
+    font-weight: 700;
 }
-
-// Excluir grupo
-function deleteGroup(groupId) {
-    if (confirm('Tem certeza que deseja excluir este grupo?')) {
-        fetch(`/user-management/groups/${groupId}/delete/`, {
-            method: 'DELETE',
-            headers: {
-                'X-CSRFToken': document.querySelector('[name=csrfmiddlewaretoken]').value
-            }
-        })
-        .then(response => response.json())
-        .then(data => {
-            if (data.success) {
-                location.reload();
-            } else {
-                alert('Erro ao excluir grupo: ' + data.error);
-            }
-        })
-        .catch(error => {
-            alert('Erro ao excluir grupo');
-        });
+.table-modern tbody tr {
+    transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+.table-modern tbody tr:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 6px 18px rgba(15, 31, 58, 0.05);
+}
+.bg-soft-primary {
+    background: rgba(13, 110, 253, 0.12);
+}
+.bg-soft-secondary {
+    background: rgba(108, 117, 125, 0.18);
+}
+.bg-soft-success {
+    background: rgba(25, 135, 84, 0.12);
+}
+.bg-success-subtle {
+    background: rgba(25, 135, 84, 0.15) !important;
+}
+.bg-danger-subtle {
+    background: rgba(220, 53, 69, 0.12) !important;
+}
+@media (max-width: 992px) {
+    .permission-dashboard .metric-card {
+        text-align: center;
     }
 }
+</style>
+{% endblock %}
 
-// Salvar grupo
-document.getElementById('groupForm').addEventListener('submit', function(e) {
-    e.preventDefault();
-    
-    const formData = new FormData();
-    formData.append('name', document.getElementById('groupName').value);
-    
-    // Coletar permissões selecionadas
-    const selectedPermissions = [];
-    document.querySelectorAll('input[type="checkbox"]:checked').forEach(checkbox => {
-        selectedPermissions.push(checkbox.value);
-    });
-    formData.append('permissions', JSON.stringify(selectedPermissions));
-    
-    const url = currentGroupId ? 
-        `/user-management/groups/${currentGroupId}/update/` : 
-        '/user-management/groups/create/';
-    
-    fetch(url, {
-        method: 'POST',
-        headers: {
-            'X-CSRFToken': document.querySelector('[name=csrfmiddlewaretoken]').value
-        },
-        body: formData
-    })
-    .then(response => response.json())
-    .then(data => {
-        if (data.success) {
-            location.reload();
-        } else {
-            alert('Erro ao salvar grupo: ' + data.error);
+{% block extra_js %}
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    const modalElement = document.getElementById('groupModal');
+    if (modalElement && modalElement.parentElement !== document.body) {
+        document.body.appendChild(modalElement);
+    }
+
+    const searchInput = document.getElementById('customPermissionSearch');
+    const moduleInput = document.getElementById('filterModule');
+    const actionInput = document.getElementById('filterAction');
+    const activeToggle = document.getElementById('filterActiveOnly');
+    const tableRows = Array.from(document.querySelectorAll('#custom-permissions-table tbody tr'));
+
+    const normalize = (value) => (value || '').toString().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+
+    const applyFilters = () => {
+        const term = normalize(searchInput ? searchInput.value : '');
+        const moduleTerm = normalize(moduleInput ? moduleInput.value : '');
+        const actionTerm = normalize(actionInput ? actionInput.value : '');
+        const activeOnly = activeToggle ? activeToggle.checked : false;
+
+        tableRows.forEach((row) => {
+            const haystack = normalize(row.dataset.search);
+            const moduleValue = normalize(row.dataset.module);
+            const actionValue = normalize(row.dataset.action);
+            const isActive = row.dataset.active === 'true';
+
+            const matchesSearch = !term || haystack.includes(term);
+            const matchesModule = !moduleTerm || moduleValue.includes(moduleTerm);
+            const matchesAction = !actionTerm || actionValue.includes(actionTerm);
+            const matchesActive = !activeOnly || isActive;
+
+            row.style.display = matchesSearch && matchesModule && matchesAction && matchesActive ? '' : 'none';
+        });
+    };
+
+    [searchInput, moduleInput, actionInput, activeToggle].forEach((input) => {
+        if (!input) {
+            return;
         }
-    })
-    .catch(error => {
-        alert('Erro ao salvar grupo');
+        const eventType = input.type === 'checkbox' ? 'change' : 'input';
+        input.addEventListener(eventType, applyFilters);
     });
+
+    if (tableRows.length) {
+        applyFilters();
+    }
+
+    const tooltipTriggerList = [].slice.call(document.querySelectorAll('[data-bs-toggle="tooltip"]'));
+    tooltipTriggerList.forEach((tooltipTriggerEl) => new bootstrap.Tooltip(tooltipTriggerEl));
+
+    let currentGroupId = null;
+    // modalElement já foi definido acima e possivelmente movido para document.body
+    const groupForm = document.getElementById('groupForm');
+    const groupNameInput = document.getElementById('groupName');
+    const modalTitle = document.getElementById('groupModalTitle');
+    // Somente checkboxes de permissões (exclui os toggles por módulo)
+    const permissionCheckboxes = groupForm ? Array.from(groupForm.querySelectorAll('input.perm-checkbox[type="checkbox"]')) : [];
+    const moduleSections = groupForm ? Array.from(groupForm.querySelectorAll('.module-section')) : [];
+    const moduleToggles = groupForm ? Array.from(groupForm.querySelectorAll('input.module-toggle[type="checkbox"]')) : [];
+    const csrfInput = document.querySelector('input[name="csrfmiddlewaretoken"]');
+
+    const groupModal = modalElement && typeof bootstrap !== 'undefined'
+        ? bootstrap.Modal.getOrCreateInstance(modalElement)
+        : null;
+
+    const getCsrfToken = () => (csrfInput ? csrfInput.value : '');
+
+    const clearSelections = () => {
+        permissionCheckboxes.forEach((checkbox) => {
+            checkbox.checked = false;
+        });
+    };
+
+    const updateModuleToggleStates = () => {
+        if (!moduleSections || !moduleSections.length) return;
+        moduleSections.forEach((section) => {
+            const toggle = section.querySelector('.module-toggle');
+            if (!toggle) return;
+            const perms = Array.from(section.querySelectorAll('input.perm-checkbox[type="checkbox"]'));
+            const total = perms.length;
+            const checked = perms.filter((cb) => cb.checked).length;
+            if (checked === 0) {
+                toggle.checked = false;
+                toggle.indeterminate = false;
+            } else if (checked === total) {
+                toggle.checked = true;
+                toggle.indeterminate = false;
+            } else {
+                toggle.checked = false;
+                toggle.indeterminate = true;
+            }
+        });
+    };
+
+    const applySelections = (permissionIds) => {
+        const ids = new Set((permissionIds || []).map((id) => Number(id)));
+        permissionCheckboxes.forEach((checkbox) => {
+            checkbox.checked = ids.has(Number(checkbox.value));
+        });
+    };
+
+    const collectSelectedPermissions = () =>
+        permissionCheckboxes.filter((checkbox) => checkbox.checked).map((checkbox) => checkbox.value);
+
+    const openModal = (title) => {
+        if (!groupModal || !groupForm || !groupNameInput) {
+            return;
+        }
+        groupForm.reset();
+        clearSelections();
+        groupNameInput.classList.remove('is-invalid');
+        if (modalTitle) {
+            modalTitle.textContent = title;
+        }
+        updateModuleToggleStates();
+        groupModal.show();
+    };
+
+    window.createGroup = function createGroup() {
+        currentGroupId = null;
+        openModal('Novo Grupo');
+    };
+
+    window.editGroup = async function editGroup(groupId) {
+        try {
+            const response = await fetch(`/user-management/groups/${groupId}/`);
+            if (!response.ok) {
+                throw new Error('Falha ao carregar o grupo.');
+            }
+            const data = await response.json();
+            currentGroupId = groupId;
+            openModal('Editar Grupo');
+            groupNameInput.value = data.name || '';
+            applySelections(data.permissions || []);
+            updateModuleToggleStates();
+        } catch (error) {
+            console.error(error);
+            alert('Erro ao carregar dados do grupo.');
+        }
+    };
+
+    window.deleteGroup = async function deleteGroup(groupId) {
+        if (!confirm('Tem certeza que deseja excluir este grupo?')) {
+            return;
+        }
+
+        try {
+            const response = await fetch(`/user-management/groups/${groupId}/delete/`, {
+                method: 'DELETE',
+                headers: {
+                    'X-CSRFToken': getCsrfToken(),
+                },
+            });
+
+            const payload = await response.json();
+            if (!response.ok || !payload.success) {
+                throw new Error(payload.error || 'Não foi possível excluir o grupo.');
+            }
+
+            window.location.reload();
+        } catch (error) {
+            console.error(error);
+            alert(error.message);
+        }
+    };
+
+    window.viewGroupPermissions = function viewGroupPermissions() {
+        alert('Funcionalidade de visualização de permissões em desenvolvimento');
+    };
+
+    const handleGroupSubmit = async (event) => {
+        event.preventDefault();
+
+        if (!groupNameInput || !groupForm) {
+            return;
+        }
+
+        if (!groupNameInput.checkValidity()) {
+            groupNameInput.classList.add('is-invalid');
+            return;
+        }
+
+        const formData = new FormData();
+        formData.append('name', groupNameInput.value.trim());
+        formData.append('permissions', JSON.stringify(collectSelectedPermissions()));
+
+        const url = currentGroupId
+            ? `/user-management/groups/${currentGroupId}/update/`
+            : '/user-management/groups/create/';
+
+        try {
+            const response = await fetch(url, {
+                method: 'POST',
+                headers: {
+                    'X-CSRFToken': getCsrfToken(),
+                },
+                body: formData,
+            });
+
+            const payload = await response.json();
+            if (!response.ok || !payload.success) {
+                throw new Error(payload.error || 'Não foi possível salvar o grupo.');
+            }
+
+            groupModal.hide();
+            window.location.reload();
+        } catch (error) {
+            console.error(error);
+            alert(error.message);
+        }
+    };
+
+    if (groupForm) {
+        groupForm.addEventListener('submit', handleGroupSubmit);
+    }
+
+    // Listeners para toggles por módulo e checkboxes individuais
+    moduleToggles.forEach((toggle) => {
+        toggle.addEventListener('change', () => {
+            const section = toggle.closest('.module-section');
+            if (!section) return;
+            const perms = Array.from(section.querySelectorAll('input.perm-checkbox[type="checkbox"]'));
+            perms.forEach((cb) => { cb.checked = toggle.checked; });
+            updateModuleToggleStates();
+        });
+    });
+
+    permissionCheckboxes.forEach((cb) => {
+        cb.addEventListener('change', () => {
+            const section = cb.closest('.module-section');
+            if (!section) return;
+            const toggle = section.querySelector('.module-toggle');
+            if (!toggle) return;
+            const perms = Array.from(section.querySelectorAll('input.perm-checkbox[type="checkbox"]'));
+            const total = perms.length;
+            const checked = perms.filter((c) => c.checked).length;
+            if (checked === 0) {
+                toggle.checked = false;
+                toggle.indeterminate = false;
+            } else if (checked === total) {
+                toggle.checked = true;
+                toggle.indeterminate = false;
+            } else {
+                toggle.checked = false;
+                toggle.indeterminate = true;
+            }
+        });
+    });
+
+    // Estado inicial dos toggles
+    updateModuleToggleStates();
 });
 
-// Sincronizar permissões
 function syncPermissions() {
+    const csrfInput = document.querySelector('input[name="csrfmiddlewaretoken"]');
+    const csrfToken = csrfInput ? csrfInput.value : '';
+
     if (confirm('Sincronizar permissões do sistema? Isso pode demorar alguns instantes.')) {
         fetch('/user-management/permissions/sync/', {
             method: 'POST',
             headers: {
-                'X-CSRFToken': document.querySelector('[name=csrfmiddlewaretoken]').value
-            }
+                'X-CSRFToken': csrfToken,
+            },
         })
-        .then(response => response.json())
-        .then(data => {
-            if (data.success) {
-                alert(`Sincronização concluída! ${data.created} permissões criadas.`);
-                location.reload();
-            } else {
-                alert('Erro na sincronização: ' + data.error);
-            }
-        })
-        .catch(error => {
-            alert('Erro na sincronização');
-        });
+            .then((response) => response.json())
+            .then((data) => {
+                if (data.success) {
+                    alert(`Sincronização concluída! ${data.created} permissões criadas.`);
+                    window.location.reload();
+                } else {
+                    alert('Erro na sincronização: ' + data.error);
+                }
+            })
+            .catch(() => {
+                alert('Erro na sincronização');
+            });
     }
 }
 
-// Exportar permissões
 function exportPermissions() {
     alert('Funcionalidade de exportação em desenvolvimento');
 }

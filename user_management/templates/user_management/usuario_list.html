@@ -86,19 +86,25 @@
                     {% endif %}
                 </td>
                 <td class="col-tipo text-center">
-                    {% if usuario.user.is_superuser %}
-                        <span class="badge badge-ultra-modern badge-type-compact badge-type-admin">
-                            <i class="fas fa-crown"></i> Super
-                        </span>
-                    {% elif usuario.user.is_staff %}
-                        <span class="badge badge-ultra-modern badge-type-compact badge-type-staff">
-                            <i class="fas fa-user-cog"></i> Staff
-                        </span>
-                    {% else %}
-                        <span class="badge badge-ultra-modern badge-type-compact badge-type-user">
-                            <i class="fas fa-user"></i> Comum
-                        </span>
-                    {% endif %}
+                    {% with tipo=usuario.tipo_usuario %}
+                        {% if usuario.user.is_superuser or tipo == 'super_admin' %}
+                            <span class="badge badge-ultra-modern badge-type-compact badge-type-admin">
+                                <i class="fas fa-crown"></i> Super Admin
+                            </span>
+                        {% elif usuario.is_tenant_admin or tipo == 'admin_empresa' %}
+                            <span class="badge badge-ultra-modern badge-type-compact badge-type-staff">
+                                <i class="fas fa-user-cog"></i> Administrador
+                            </span>
+                        {% elif usuario.user.is_staff %}
+                            <span class="badge badge-ultra-modern badge-type-compact badge-type-staff">
+                                <i class="fas fa-user-cog"></i> Staff
+                            </span>
+                        {% else %}
+                            <span class="badge badge-ultra-modern badge-type-compact badge-type-user">
+                                <i class="fas fa-user"></i> {{ usuario.get_tipo_usuario_display|default:"Comum" }}
+                            </span>
+                        {% endif %}
+                    {% endwith %}
                 </td>
                 <td class="col-ultimo-login text-center">
                     <div class="text-xs">

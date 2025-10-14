@@ -629,14 +629,14 @@ class Tenant(TimestampedModel):
             self._apply_plan_and_essentials()
         except Exception:
             logger.exception("Falha ao aplicar módulos de plano/essenciais (prossegue com save).")
-        # Normalização estrita opcional (mantida depois da aplicação do plano)
-        if getattr(settings, "FEATURE_STRICT_ENABLED_MODULES", False):
-            try:
-                norm = self._normalize_enabled_modules(self.enabled_modules)
-                # Persistir como lista para compatibilidade ampla com testes/legado
-                self.enabled_modules = list(norm.get("modules", []))
-            except (TypeError, json.JSONDecodeError):
-                self.enabled_modules = []
+            # Normalização estrita opcional (mantida depois da aplicação do plano)
+            if getattr(settings, "FEATURE_STRICT_ENABLED_MODULES", False):
+                try:
+                    norm = self._normalize_enabled_modules(self.enabled_modules)
+                    # Persistir como dict composto para compatibilidade com planos/legado
+                    self.enabled_modules = self._compose_enabled_modules_dict(norm.get("modules", []))
+                except (TypeError, json.JSONDecodeError):
+                    self.enabled_modules = {"modules": []}
         super().save(*args, **kwargs)
 
     # Compat: alguns trechos legados referenciam tenant.slug; expor property.
@@ -681,16 +681,16 @@ class Tenant(TimestampedModel):
 
     @modules.setter
     def modules(self, value: dict[str, Any] | list[str] | None) -> None:  # pragma: no cover
-        """Setter tolerante para enabled_modules."""
+        """Setter tolerante para enabled_modules (persiste dict composto)."""
         if value is None:
-            self.enabled_modules = []
+            self.enabled_modules = {"modules": []}
         elif isinstance(value, list):
-            self.enabled_modules = list(value)
+            self.enabled_modules = self._compose_enabled_modules_dict(list(value))
         elif isinstance(value, dict):
             norm = self._normalize_enabled_modules(value)
-            self.enabled_modules = list(norm.get("modules", []))
+            self.enabled_modules = self._compose_enabled_modules_dict(norm.get("modules", []))
         else:
-            self.enabled_modules = []
+            self.enabled_modules = {"modules": []}
 
     def has_module(self, code: str) -> bool:
         """Check if a module is enabled for the tenant."""
@@ -708,12 +708,25 @@ class Tenant(TimestampedModel):
         return False
 
     @staticmethod
+    def _is_truthy_flag(value: object) -> bool:
+        """Return True when a legacy flag value indicates an enabled module."""
+        if isinstance(value, (bool, int, str)):
+            return value in (True, 1, "on", "ON")
+        return False
+
+    @staticmethod
     def _normalize_enabled_modules(raw: dict | list | str | None) -> dict[str, list[str]]:
         """Normalize the enabled_modules field to a canonical format."""
         if isinstance(raw, dict):
             if "modules" in raw and isinstance(raw["modules"], list | tuple):
                 return {"modules": list(dict.fromkeys([str(m).strip() for m in raw["modules"] if m]))}
-            return {"modules": [k for k, v in raw.items() if v in (True, 1, "on", "ON")]}
+            enabled = [
+                key
+                for key, value in raw.items()
+                if (isinstance(value, dict) and Tenant._is_truthy_flag(value.get("enabled")))
+                or Tenant._is_truthy_flag(value)
+            ]
+            return {"modules": list(dict.fromkeys(enabled))}
 
         if isinstance(raw, list | tuple):
             return {"modules": list(dict.fromkeys([str(m).strip() for m in raw if m]))}
@@ -733,6 +746,14 @@ class Tenant(TimestampedModel):
             return {"modules": modules}
 
         return {"modules": []}
+
+    @staticmethod
+    def _compose_enabled_modules_dict(mods: list[str]) -> dict[str, Any]:
+        """Compose a dict with 'modules' list and legacy per-module enabled flags."""
+        unique = list(dict.fromkeys([m for m in mods if m]))
+        flags = {m: {"enabled": True} for m in unique}
+        composed: dict[str, Any] = {"modules": unique, **flags}
+        return composed
 
     def is_module_enabled(self, module_name: str) -> bool:
         """Retorna True se o módulo está habilitado (compatível com formatos legados).
@@ -797,8 +818,8 @@ class Tenant(TimestampedModel):
         combined.update(self.ESSENTIAL_TENANT_MODULES)
         # Remover placeholders vazios e persistir no formato canônico
         final_list = sorted(m for m in combined if m)
-        # Persistir como lista para compatibilidade com verificações (ex.: 'in enabled_modules')
-        self.enabled_modules = final_list
+        # Persistir como dict composto (compat .get("modules") e membership por chave)
+        self.enabled_modules = self._compose_enabled_modules_dict(final_list)
 
     def recompute_modules_from_plan(self, *, persist: bool = True) -> list[str]:
         """Recalcula módulos a partir do plano atual.
@@ -811,7 +832,8 @@ class Tenant(TimestampedModel):
             super().save(update_fields=["enabled_modules"])
         if isinstance(self.enabled_modules, dict):
             return list(self.enabled_modules.get("modules", []))
-        return []
+        norm = self._normalize_enabled_modules(self.enabled_modules)
+        return list(norm.get("modules", []))
 
     def get_documento_principal(self) -> str | None:
         """Retorna o CPF ou CNPJ dependendo do tipo de pessoa."""

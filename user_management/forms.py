@@ -11,6 +11,9 @@ from django.contrib.auth.forms import UserCreationForm
 from django.contrib.auth.models import AbstractUser, Group
 from django.core.exceptions import ValidationError
 from django.utils import timezone
+from django.utils.translation import gettext_lazy as _
+
+from core.module_registry import get_all_module_choices
 
 from .models import ConviteUsuario, PerfilUsuarioEstendido, PermissaoPersonalizada, StatusUsuario, TipoUsuario
 
@@ -404,6 +407,16 @@ class ConviteUsuarioForm(forms.ModelForm):
 class PermissaoPersonalizadaForm(forms.ModelForm):
     """Formulário para gerenciar permissões personalizadas."""
 
+    ACTION_CHOICES: ClassVar[list[tuple[str, str]]] = [
+        ("view", _("Visualizar")),
+        ("create", _("Criar")),
+        ("update", _("Atualizar")),
+        ("delete", _("Excluir")),
+        ("export", _("Exportar")),
+        ("approve", _("Aprovar")),
+        ("custom", _("Personalizada")),
+    ]
+
     class Meta:
         """Meta opções para o formulário de permissão."""
 
@@ -426,7 +439,11 @@ class PermissaoPersonalizadaForm(forms.ModelForm):
     def __init__(self, *args: Any, **kwargs: Any) -> None:  # noqa: ANN401
         """Inicializa o formulário de permissão com escopo de tenant."""
         self.tenant = kwargs.pop("tenant", None)
+        self.request_user = kwargs.pop("request_user", None)
         super().__init__(*args, **kwargs)
+
+        self._configure_module_field()
+        self._configure_action_field()
 
         if "scope_tenant" in self.fields:
             tenant_model = apps.get_model("core", "Tenant")
@@ -456,10 +473,61 @@ class PermissaoPersonalizadaForm(forms.ModelForm):
         for field in self.fields.values():
             if isinstance(field.widget, forms.CheckboxInput):
                 field.widget.attrs["class"] = "form-check-input"
+            elif isinstance(field.widget, forms.Select):
+                field.widget.attrs["class"] = "form-select"
             elif isinstance(field.widget, forms.Textarea):
                 field.widget.attrs["class"] = "form-control"
             else:
                 field.widget.attrs["class"] = "form-control"
+
+    def _configure_module_field(self) -> None:
+        """Ajusta o campo de módulo com opções disponíveis e labels em português."""
+        if "modulo" not in self.fields:
+            return
+        available_choices = get_all_module_choices()
+        label_map = dict(available_choices)
+
+        tenant_codes: set[str] = set()
+        if self.tenant is not None:
+            modules_data = getattr(self.tenant, "modules", {})
+            module_list: list[str] = []
+            if isinstance(modules_data, dict):
+                module_list = list(modules_data.get("modules", []) or [])
+            elif isinstance(modules_data, (list, tuple)):
+                module_list = list(modules_data)
+            for code in module_list:
+                if code:
+                    tenant_codes.add(str(code))
+
+        prioritized: list[tuple[str, str]] = []
+        for code in sorted(tenant_codes, key=lambda c: label_map.get(c, c.upper())):
+            label = label_map.get(code) or code.replace("_", " ").title()
+            prioritized.append((code, label))
+
+        missing_codes = [code for code in tenant_codes if code not in label_map]
+        for code in missing_codes:
+            label_map[code] = code.replace("_", " ").title()
+
+        remaining = [(code, label) for code, label in available_choices if code not in tenant_codes]
+        combined = prioritized + [(code, label_map.get(code, label)) for code, label in remaining]
+
+        choices = [("", _("Selecione um módulo")), *combined]
+
+        field = self.fields["modulo"]
+        field.widget = forms.Select(choices=choices)
+        field.widget.attrs.setdefault("aria-label", str(field.label or _("Módulo")))
+        field.help_text = _("Escolha o módulo que receberá esta permissão.")
+
+    def _configure_action_field(self) -> None:
+        """Define opções sugeridas para o campo de ação em português."""
+        if "acao" not in self.fields:
+            return
+
+        choices = [("", _("Selecione uma ação")), *self.ACTION_CHOICES]
+        field = self.fields["acao"]
+        field.widget = forms.Select(choices=choices)
+        field.widget.attrs.setdefault("aria-label", str(field.label or _("Ação")))
+        field.help_text = _("Selecione o tipo de ação (ex.: Visualizar, Criar, Atualizar).")
 
     def clean(self) -> dict[str, Any]:
         """Valida os dados do formulário para evitar permissões duplicadas."""

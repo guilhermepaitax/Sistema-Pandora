@@ -11,11 +11,12 @@ from django.contrib import messages
 from django.contrib.auth import get_user_model
 from django.contrib.auth.decorators import login_required
 from django.contrib.auth.mixins import LoginRequiredMixin
+from django.contrib.auth.models import Group, Permission
 from django.contrib.auth.views import PasswordChangeView
 from django.contrib.sessions.models import Session
 from django.core.cache import cache
 from django.core.mail import send_mail
-from django.db.models import Count, Q, QuerySet, Sum
+from django.db.models import Count, Exists, OuterRef, Q, QuerySet, Sum
 from django.forms import BaseModelForm
 from django.http import HttpRequest, HttpResponse, HttpResponseForbidden, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
@@ -215,39 +216,47 @@ class UsuarioListView(TenantAdminOrSuperuserMixin, UIPermissionsMixin, PageTitle
 
     def get_queryset(self) -> QuerySet:
         """Retorna queryset filtrado por tenant e parâmetros de busca."""
-        queryset = PerfilUsuarioEstendido.objects.select_related("user").all()
+        tenant = getattr(self.request, "tenant", None)
+        queryset = PerfilUsuarioEstendido.objects.select_related("user")
+        admin_subquery = TenantUser.objects.filter(user_id=OuterRef("user_id"), is_tenant_admin=True)
+        if tenant:
+            admin_subquery = admin_subquery.filter(tenant_id=tenant.id)
+        queryset = queryset.annotate(is_tenant_admin=Exists(admin_subquery))
 
-        # Aplicar escopo de tenant
         if not self.request.user.is_superuser:
-            tenant = getattr(self.request, "tenant", None)
-            if tenant:
-                queryset = queryset.filter(user__tenant_memberships__tenant_id=tenant.id)
-            else:
+            if not tenant:
                 return queryset.none()
+            queryset = queryset.filter(user__tenant_memberships__tenant_id=tenant.id)
 
-        # Filtros (GET) utilizando FiltroUsuarioForm
-        self.filter_form = None
         self.filter_form = FiltroUsuarioForm(self.request.GET or None)
-        if self.filter_form.is_valid():
-            data = self.filter_form.cleaned_data
-            if data.get("busca"):
-                termo = data["busca"]
-                queryset = queryset.filter(
-                    Q(user__first_name__icontains=termo)
-                    | Q(user__last_name__icontains=termo)
-                    | Q(user__email__icontains=termo)
-                    | Q(cpf__icontains=termo),
-                )
-            if data.get("tipo_usuario"):
-                queryset = queryset.filter(tipo_usuario=data["tipo_usuario"])
-            if data.get("status"):
-                queryset = queryset.filter(status=data["status"])
-            if data.get("departamento"):
-                queryset = queryset.filter(departamento__icontains=data["departamento"])
-            if data.get("ativo") == "true":
-                queryset = queryset.filter(user__is_active=True)
-            elif data.get("ativo") == "false":
-                queryset = queryset.filter(user__is_active=False)
+        if not self.filter_form.is_valid():
+            return queryset
+
+        data = self.filter_form.cleaned_data
+        busca = data.get("busca")
+        if busca:
+            queryset = queryset.filter(
+                Q(user__first_name__icontains=busca)
+                | Q(user__last_name__icontains=busca)
+                | Q(user__email__icontains=busca)
+                | Q(cpf__icontains=busca),
+            )
+
+        tipo = data.get("tipo_usuario")
+        if tipo:
+            queryset = queryset.filter(tipo_usuario=tipo)
+
+        status = data.get("status")
+        if status:
+            queryset = queryset.filter(status=status)
+
+        departamento = data.get("departamento")
+        if departamento:
+            queryset = queryset.filter(departamento__icontains=departamento)
+
+        ativo = data.get("ativo")
+        if ativo in {"true", "false"}:
+            queryset = queryset.filter(user__is_active=(ativo == "true"))
 
         return queryset
 
@@ -325,9 +334,16 @@ class UsuarioCreateView(
     model_name = "perfilusuarioestendido"
 
     def form_valid(self, form: BaseModelForm) -> HttpResponse:
-        """Exibe mensagem de sucesso após criar o usuário."""
+        """Exibe mensagem de sucesso e redireciona conforme intenção (permissões ou lista)."""
+        response = super().form_valid(form)
         messages.success(self.request, f"Usuário {form.instance.username} criado com sucesso!")
-        return super().form_valid(form)
+        # Se o usuário clicou em "Salvar e configurar permissões", redirecionar para permissões personalizadas
+        if self.request.POST.get("next") == "permissoes" and hasattr(self.object, "user"):
+            user_id = getattr(self.object.user, "id", None)
+            if user_id:
+                url = f"{reverse('user_management:permissao_create')}?user={user_id}"
+                return redirect(url)
+        return response
 
 
 class UsuarioUpdateView(
@@ -629,6 +645,51 @@ class PermissaoListView(TenantRequiredMixin, PermissionRequiredMixin, PageTitleM
     page_title = "Permissões Personalizadas"
     required_modulo = "user_management"
     required_acao = "view_permissions"
+
+    def get_queryset(self) -> QuerySet:
+        """Filtra permissões personalizadas pelo tenant atual e otimiza relacionamentos."""
+        queryset = super().get_queryset().select_related("user", "scope_tenant")
+        tenant = getattr(self.request, "tenant", None)
+        if tenant:
+            queryset = queryset.filter(scope_tenant=tenant)
+        return queryset
+
+    def get_context_data(self, **kwargs: object) -> dict[str, Any]:
+        """Enriquece o contexto com grupos e permissões padrão do Django."""
+        context = super().get_context_data(**kwargs)
+
+        permissions_qs = Permission.objects.select_related("content_type").order_by(
+            "content_type__app_label",
+            "codename",
+        )
+
+        # Segurança: oculta permissões do módulo 'core' para não-superusuários
+        user = getattr(self.request, "user", None)
+        if not (user and getattr(user, "is_superuser", False)):
+            permissions_qs = permissions_qs.exclude(content_type__app_label="core")
+        groups_qs = Group.objects.prefetch_related("permissions", "user_set").order_by("name")
+
+        group_app_counts: dict[int, dict[str, int]] = {}
+        for group in groups_qs:
+            counts: dict[str, int] = {}
+            for permission in group.permissions.all():
+                app_label = getattr(permission.content_type, "app_label", None)
+                if not app_label:
+                    continue
+                # Não expõe 'core' para não-superusuários
+                if not (user and getattr(user, "is_superuser", False)) and app_label == "core":
+                    continue
+                counts[app_label] = counts.get(app_label, 0) + 1
+            group_app_counts[group.id] = counts
+
+        context.update(
+            {
+                "permissions": permissions_qs,
+                "groups": list(groups_qs),
+                "group_app_counts": group_app_counts,
+            },
+        )
+        return context
 
 
 class PermissaoCreateView(

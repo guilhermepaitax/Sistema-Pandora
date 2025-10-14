@@ -1,5 +1,5 @@
 {% extends "pandora_ultra_modern_base.html" %}
-{% load static %}
+{% load static core_tags %}
 
 {% block title %}Mapa de Navegação - Pandora ERP{% endblock %}
 
@@ -90,6 +90,7 @@
                                 <small class="d-block text-muted">Sistema de orçamentação</small>
                             </div>
                         </a>
+                        {% if is_module_enabled 'obras' %}
                         <a href="{% url 'obras:obras_list' %}" class="list-group-item list-group-item-action d-flex align-items-center">
                             <i class="fas fa-tools text-warning me-3"></i>
                             <div>
@@ -97,6 +98,7 @@
                                 <small class="d-block text-muted">Gestão de projetos</small>
                             </div>
                         </a>
+                        {% endif %}
                         <a href="{% url 'servicos:servicos_ofertados_list' %}" class="list-group-item list-group-item-action d-flex align-items-center">
                             <i class="fas fa-cog text-info me-3"></i>
                             <div>

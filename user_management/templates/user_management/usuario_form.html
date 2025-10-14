@@ -358,14 +358,15 @@
                         {% endif %}
                         
                         <!-- Acesso rápido para Permissões Personalizadas -->
-                        <div class="col-12">
+                        <div class="col-12 d-flex gap-2 flex-wrap">
                             {% if object %}
                                 <a href="{% url 'user_management:permissao_create' %}?user={{ object.user.id }}" class="btn btn-outline-secondary">
                                     <i class="fas fa-key me-2"></i>Configurar Permissões Personalizadas
                                 </a>
                             {% else %}
-                                <button type="button" class="btn btn-outline-secondary" disabled title="Salve o usuário para configurar permissões">
-                                    <i class="fas fa-key me-2"></i>Configurar Permissões Personalizadas
+                                <!-- Ao criar, permite salvar e ir direto para configurar permissões -->
+                                <button type="submit" name="next" value="permissoes" class="btn btn-outline-secondary" {% if not ui_perms.can_add %}disabled{% endif %}>
+                                    <i class="fas fa-key me-2"></i>Salvar e configurar permissões
                                 </button>
                             {% endif %}
                         </div>
