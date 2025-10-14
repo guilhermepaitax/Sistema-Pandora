@@ -5,10 +5,12 @@ FROM python:${PYTHON_VERSION}
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
-# Dependências de build para psycopg2 e afins
+# Dependências de build para psycopg2, Cairo/pycairo e afins
 RUN apt-get update && apt-get install -y \
     libpq-dev \
     gcc \
+    pkg-config \
+    libcairo2-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Diretório de trabalho consistente com o entrypoint
