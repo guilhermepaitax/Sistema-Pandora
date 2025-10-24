@@ -20,7 +20,15 @@ def test_portal_whitelist_denial(settings):
     user.save()
     from core.models import Tenant
 
-    tenant = Tenant.objects.create(nome="T1", slug="t1", enabled_modules='["clientes","documentos"]')
+    tenant = Tenant.objects.create(
+        nome="T1",
+        slug="t1",
+        enabled_modules={
+            "modules": ["clientes", "documentos"],
+            "clientes": {"enabled": True},
+            "documentos": {"enabled": True},
+        },
+    )
     dec_ok = can_access_module(user, tenant, "documentos")
     dec_deny = can_access_module(user, tenant, "clientes")
     assert dec_ok.allowed is True
@@ -34,7 +42,11 @@ def test_permission_resolver_strict_enforces(settings, monkeypatch):
     user = User.objects.create_user("interno", password="x")
     from core.models import Tenant
 
-    tenant = Tenant.objects.create(nome="T2", slug="t2", enabled_modules='["clientes"]')
+    tenant = Tenant.objects.create(
+        nome="T2",
+        slug="t2",
+        enabled_modules={"modules": ["clientes"], "clientes": {"enabled": True}},
+    )
     # Monkeypatch permission_resolver to always deny
     from shared.services import permission_resolver as pr_mod
 
@@ -54,7 +66,11 @@ def test_permission_resolver_strict_denies_module(settings):
     user = User.objects.create_user("interno2", password="x")
     from core.models import Tenant
 
-    tenant = Tenant.objects.create(nome="T3", slug="t3", enabled_modules='["financeiro"]')
+    tenant = Tenant.objects.create(
+        nome="T3",
+        slug="t3",
+        enabled_modules={"modules": ["financeiro"], "financeiro": {"enabled": True}},
+    )
     # Sem permissões personalizadas, resolver deve negar VIEW_FINANCEIRO e módulo deve ser negado em modo estrito
     decision = can_access_module(user, tenant, "financeiro")
     assert decision.allowed is False and decision.reason in {REASON_RESOLVER_DENY, REASON_MODULE_DISABLED}

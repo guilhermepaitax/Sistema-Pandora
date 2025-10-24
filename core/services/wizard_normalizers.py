@@ -38,41 +38,74 @@ def dedupe_preserve_order(items: Sequence[str]) -> list[str]:
 
 
 def normalize_enabled_modules(value: object) -> list[str]:
-    """Normalizar lista heterogênea de módulos (string CSV/JSON, lista, set ou dict legado).
+    """Normalizar entrada heterogênea de módulos para lista limpa.
 
-    Retorna lista ordenada (alfabética) sem duplicados.
+    SEMPRE retorna lista de strings (nunca dict).
+    Aceita vários formatos de entrada mas output é consistente.
+
+    Args:
+        value: String CSV/JSON, lista, set, ou dict no formato moderno
+
+    Returns:
+        Lista ordenada alfabeticamente sem duplicados
+
+    Examples:
+        >>> normalize_enabled_modules("clientes, produtos")
+        ['clientes', 'produtos']
+        >>> normalize_enabled_modules(['clientes', 'produtos'])
+        ['clientes', 'produtos']
+        >>> normalize_enabled_modules({"modules": ["clientes"]})
+        ['clientes']
+
     """
     if not value:
         return []
+
     modules: list[str] = []
+
     try:
-        if isinstance(value, str):  # CSV ou JSON de lista
+        if isinstance(value, str):  # CSV ou JSON
             stripped = value.strip()
             if stripped.startswith("["):
+                # Tentar parsear como JSON
                 parsed = json.loads(stripped)
                 if isinstance(parsed, list):
                     modules.extend(str(x).strip() for x in parsed if x)
-                else:  # fallback -> tentar CSV
+                else:
+                    # Fallback CSV
                     modules.extend(v.strip() for v in stripped.split(",") if v.strip())
             else:
+                # Tratar como CSV
                 modules.extend(v.strip() for v in stripped.split(",") if v.strip())
-        elif isinstance(value, dict):  # buscar chaves padrão
-            for key in ("modules", "legacy", "values", "items"):
-                seq = value.get(key)
-                if isinstance(seq, (list, tuple, set)):
-                    modules.extend(str(v).strip() for v in seq if v)
-                    break
+
+        elif isinstance(value, dict):
+            # Formato moderno: extrair lista "modules"
+            seq = value.get("modules")
+            if isinstance(seq, (list, tuple, set)):
+                modules.extend(str(v).strip() for v in seq if v)
+            else:
+                # Formato legado: dict sem "modules" - extrair chaves com enabled=True
+                for key, val in value.items():
+                    if isinstance(val, dict) and val.get("enabled") is True:
+                        modules.append(str(key).strip())
+                    elif isinstance(val, list):
+                        # Caso: {"legacy": ["x", "y"]}
+                        modules.extend(str(v).strip() for v in val if v)
+
         elif isinstance(value, (list, tuple, set)):
             modules.extend(str(v).strip() for v in value if v)
+
     except Exception as e:  # noqa: BLE001
         logger.warning("Falha ao normalizar enabled_modules: %s", e)
+
     return sorted(dedupe_preserve_order(modules))
 
 
 _MODULE_ALIASES: dict[str, str] = {
     # Alias históricos ou variações comuns digitadas pelo usuário / front
-    "agendamentos": "agenda",
     "agendamento": "agenda",
+    "agendamentos": "agenda",
+    "agendamentos_avancados": "agenda",
 }
 
 

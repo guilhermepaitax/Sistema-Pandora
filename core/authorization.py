@@ -7,7 +7,6 @@ Esta camada será usada gradualmente (feature flag) pelo menu e middleware.
 from __future__ import annotations
 
 import contextlib
-import json
 import logging
 from dataclasses import dataclass
 from importlib import import_module
@@ -87,40 +86,19 @@ def is_portal_user(user: AbstractBaseUser | AnonymousUser | None) -> bool:
         return False
 
 
-def _parse_enabled_modules(raw_modules: str | list | dict | None) -> list[str]:
-    """Interpreta o valor de 'enabled_modules' que pode ser string JSON, lista ou dict."""
-    if isinstance(raw_modules, list):
-        return raw_modules
-    if isinstance(raw_modules, str):
-        try:
-            parsed = json.loads(raw_modules)
-            return parsed if isinstance(parsed, list) else []
-        except json.JSONDecodeError:
-            return []
-    if isinstance(raw_modules, dict):
-        # Formato legado onde os módulos estão sob a chave "modules"
-        modules = raw_modules.get("modules")
-        return modules if isinstance(modules, list) else []
-    return []
-
-
 def _tenant_has_module(tenant: Tenant, module_name: str) -> bool:
     """Verifica se um módulo está habilitado para o tenant.
 
-    Compatível com múltiplos formatos do campo enabled_modules (dict/list/str JSON)
-    e com a API canônica tenant.is_module_enabled. Se a API canônica retornar
-    True, curte-circuita; se retornar False ou lançar exceção, tentamos o fallback
-    de parsing para manter compatibilidade com dados legados.
+    VERSÃO SIMPLIFICADA - trabalha apenas com formato moderno.
+    Formato esperado: {"modules": [...], "mod": {"enabled": True}}
     """
     if not tenant or not module_name:
         return False
 
-    # 1. API Canônica (preferencial), mas não aborta fallback em caso de False
+    # 1. API Canônica (preferencial)
     if hasattr(tenant, "is_module_enabled"):
         try:
-            canonical = bool(tenant.is_module_enabled(module_name))
-            if canonical:
-                return True
+            return bool(tenant.is_module_enabled(module_name))
         except (AttributeError, TypeError, ValueError):
             logger.warning(
                 "Erro ao chamar tenant.is_module_enabled para o tenant %s e módulo %s.",
@@ -129,11 +107,17 @@ def _tenant_has_module(tenant: Tenant, module_name: str) -> bool:
                 exc_info=True,
             )
 
-    # 2. Fallback para o campo 'enabled_modules'
+    # 2. Fallback: acesso direto ao campo (formato moderno)
     raw_modules = getattr(tenant, "enabled_modules", None)
-    if raw_modules:
-        enabled_list = _parse_enabled_modules(raw_modules)
-        return module_name in enabled_list
+    if isinstance(raw_modules, dict):
+        # Verificação rápida O(1) usando flag individual
+        module_flag = raw_modules.get(module_name)
+        if isinstance(module_flag, dict) and module_flag.get("enabled") is True:
+            return True
+
+        # Fallback: verificar lista
+        modules_list = raw_modules.get("modules", [])
+        return module_name in modules_list
 
     return False
 

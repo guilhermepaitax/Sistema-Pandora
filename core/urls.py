@@ -5,6 +5,7 @@ from django.urls import path
 from django.views.generic import RedirectView
 
 from . import api_views, views
+from .views import tenant_module_config_redirect
 from .views_wizard_metrics import wizard_metrics_view  # endpoint de métricas internas do wizard (staff-only)
 
 # Import direto dos componentes do wizard (arquivo principal agora incorporado em views refatoradas)
@@ -67,7 +68,14 @@ urlpatterns = [
     path("tenants/<int:pk>/", views.TenantDetailView.as_view(), name="tenant_detail"),
     path("tenants/<int:pk>/edit/", TenantCreationWizardView.as_view(), name="tenant_update"),
     path("tenants/<int:pk>/delete/", views.TenantDeleteView.as_view(), name="tenant_delete"),
-    path("tenants/<int:pk>/modules/", views.tenant_module_config, name="tenant_module_config"),
+    # Rota de compatibilidade: configuração de módulos agora é no Wizard Step 5,
+    # mas mantemos o nome antigo para não quebrar testes/links legados.
+    path(
+        "tenants/<int:pk>/modules/",
+        tenant_module_config_redirect,
+        name="tenant_module_config",
+    ),
+    # Rota removida: configuração de módulos agora é exclusiva do Wizard
     # --- Rotas legacy (transitórias) - manter até 2025-10 para backlinks existentes ---
     # Redirecionam para as rotas canônicas evitando quebra de links antigos.
     path(

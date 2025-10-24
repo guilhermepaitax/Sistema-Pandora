@@ -393,13 +393,20 @@ class ModuleUIData:
     locked: bool
 
 
-def annotate_modules_for_ui(plan: str, selected: Sequence[str]) -> list[ModuleUIData]:
-    """Gera lista de objetos ModuleUIData com flags para renderização."""
+def annotate_modules_for_ui(plan: str, _selected: Sequence[str]) -> list[ModuleUIData]:
+    """Gera lista de objetos ModuleUIData com flags para renderização.
+
+    Bloqueia apenas módulos essenciais para proteger funcionalidade crítica do sistema.
+    Módulos do plano ficam marcados (is_default) mas podem ser desmarcados se necessário.
+
+    Args:
+        plan: Plano de assinatura (BASIC, PRO, ENTERPRISE, CUSTOM).
+        _selected: Módulos atualmente selecionados (não usado, mantido para compatibilidade).
+
+    """
     defaults = get_plan_default_modules(plan) if plan != "CUSTOM" else set()
     essentials = get_essential_modules()
-    # selected_set não é necessário; usamos membership direto em cada loop
     data: list[ModuleUIData] = []
-    selected_set = set(selected)
     for code, meta in MODULE_DEFINITIONS.items():
         is_default = code in defaults
         is_essential = code in essentials
@@ -415,7 +422,7 @@ def annotate_modules_for_ui(plan: str, selected: Sequence[str]) -> list[ModuleUI
                 color=str(visual.get("color") or "text-muted"),
                 is_default=is_default,
                 is_essential=is_essential,
-                locked=(is_default and plan != "CUSTOM") or (code in selected_set and is_essential),
+                locked=is_essential,  # Bloquear apenas essenciais
             ),
         )
     data.sort(key=lambda d: (d.category, d.label))

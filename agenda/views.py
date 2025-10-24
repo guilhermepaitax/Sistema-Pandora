@@ -26,7 +26,7 @@ from django.views.decorators.csrf import csrf_exempt
 from django.views.generic import CreateView, DeleteView, DetailView, ListView, UpdateView
 
 from chat.models import Conversa, Mensagem
-from core.mixins import TenantRequiredMixin
+from core.mixins import ModuleRequiredMixin, TenantRequiredMixin
 from core.models import Tenant
 from core.utils import get_current_tenant
 
@@ -38,9 +38,10 @@ MESES_DO_ANO = 12
 LOGGER = logging.getLogger(__name__)
 
 
-class AgendaMixin(LoginRequiredMixin, TenantRequiredMixin):
+class AgendaMixin(LoginRequiredMixin, TenantRequiredMixin, ModuleRequiredMixin):
     """Mixin base para views de agenda."""
 
+    required_module = "agenda"
     model = Evento
 
     def get_queryset(self) -> "QuerySet[Evento]":

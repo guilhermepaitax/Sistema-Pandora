@@ -15,9 +15,7 @@ from .models import Anamnese, Atendimento, FotoEvolucao, PerfilClinico
 
 @login_required
 def prontuarios_home(request):
-    """
-    View para o dashboard de Prontuários, mostrando estatísticas e dados relevantes.
-    """
+    """View para o dashboard de Prontuários, mostrando estatísticas e dados relevantes."""
     template_name = "prontuarios/prontuarios_home.html"
     tenant = get_current_tenant(request)
 
@@ -39,8 +37,13 @@ def prontuarios_home(request):
 
 
 # Views para Serviço (as telas específicas foram movidas para o app 'servicos')
-class TenantSafeMixin:
-    """Fornece método robusto para obter tenant atual evitando AttributeError caso usuário não tenha atributo tenant ou não selecionou empresa."""
+class TenantSafeMixin(ModuleRequiredMixin):
+    """Fornece método robusto para obter tenant atual evitando AttributeError caso usuário não tenha atributo tenant ou não selecionou empresa.
+
+    Inclui proteção de módulo para garantir que apenas usuários com acesso ao módulo prontuarios possam usar estas views.
+    """
+
+    required_module = "prontuarios"
 
     def get_tenant(self):
         tenant = get_current_tenant(self.request)
@@ -190,7 +193,7 @@ class FotoEvolucaoListView(LoginRequiredMixin, TenantSafeMixin, ListView):
 
             qtxt = p.get("q")
             qs = qs.filter(
-                Q(titulo__icontains=qtxt) | Q(area_fotografada__icontains=qtxt) | Q(observacoes__icontains=qtxt)
+                Q(titulo__icontains=qtxt) | Q(area_fotografada__icontains=qtxt) | Q(observacoes__icontains=qtxt),
             )
         order = p.get("order", "-data_foto")
         if order not in ["data_foto", "-data_foto", "titulo", "-titulo"]:

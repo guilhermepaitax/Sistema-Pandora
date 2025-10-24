@@ -15,9 +15,9 @@ from django.views.generic import CreateView, DeleteView, UpdateView
 from django_filters.views import FilterView
 from django_tables2 import SingleTableView
 
-from core.utils import get_current_tenant
-
 # Importando o Mixin do local correto e centralizado: 'core'
+from core.mixins import ModuleRequiredMixin
+from core.utils import get_current_tenant
 from core.views import PageTitleMixin
 
 from .filters import UnidadeMedidaFilter
@@ -28,8 +28,7 @@ from .tables import UnidadeMedidaTable
 
 @login_required
 def cadastros_gerais_home(request):
-    """
-    Página Home do módulo Cadastros Gerais (sem dashboard), seguindo a mesma
+    """Página Home do módulo Cadastros Gerais (sem dashboard), seguindo a mesma
     estrutura visual de core_home.html (pandora_home_ultra_modern).
     """
     template_name = "cadastros_gerais/cadastros_gerais_home.html"
@@ -57,7 +56,13 @@ def cadastros_gerais_home(request):
     return render(request, template_name, context)
 
 
-class UnidadeMedidaListView(LoginRequiredMixin, PageTitleMixin, FilterView, SingleTableView):
+class CadastrosGeraisMixin(LoginRequiredMixin, ModuleRequiredMixin, PageTitleMixin):
+    """Mixin base para views de cadastros gerais com proteção de módulo"""
+
+    required_module = "cadastros_gerais"
+
+
+class UnidadeMedidaListView(CadastrosGeraisMixin, FilterView, SingleTableView):
     model = UnidadeMedida
     table_class = UnidadeMedidaTable
     filterset_class = UnidadeMedidaFilter
@@ -66,7 +71,7 @@ class UnidadeMedidaListView(LoginRequiredMixin, PageTitleMixin, FilterView, Sing
     page_title = _("Unidades de Medida")
 
 
-class UnidadeMedidaCreateView(LoginRequiredMixin, PageTitleMixin, CreateView):
+class UnidadeMedidaCreateView(CadastrosGeraisMixin, CreateView):
     model = UnidadeMedida
     form_class = UnidadeMedidaForm
     template_name = "cadastros_gerais/unidade_medida_form.html"
@@ -78,7 +83,7 @@ class UnidadeMedidaCreateView(LoginRequiredMixin, PageTitleMixin, CreateView):
         return super().form_valid(form)
 
 
-class UnidadeMedidaUpdateView(LoginRequiredMixin, PageTitleMixin, UpdateView):
+class UnidadeMedidaUpdateView(CadastrosGeraisMixin, UpdateView):
     model = UnidadeMedida
     form_class = UnidadeMedidaForm
     template_name = "cadastros_gerais/unidade_medida_form.html"
@@ -95,7 +100,7 @@ class UnidadeMedidaUpdateView(LoginRequiredMixin, PageTitleMixin, UpdateView):
         return super().form_valid(form)
 
 
-class UnidadeMedidaDeleteView(LoginRequiredMixin, PageTitleMixin, DeleteView):
+class UnidadeMedidaDeleteView(CadastrosGeraisMixin, DeleteView):
     model = UnidadeMedida
     template_name = "cadastros_gerais/generic_confirm_delete.html"
     success_url = reverse_lazy("cadastros_gerais:unidade_medida_list")
@@ -154,7 +159,8 @@ def unidade_medida_import(request):
                     if created:
                         importados_count += 1
                 messages.success(
-                    request, f"{importados_count} unidades de medida foram importadas/atualizadas com sucesso."
+                    request,
+                    f"{importados_count} unidades de medida foram importadas/atualizadas com sucesso.",
                 )
                 return redirect("cadastros_gerais:unidade_medida_list")
 
@@ -189,7 +195,7 @@ class ItemAuxiliarTable(tables.Table):
         sequence = ("nome", "categoria", "alvos", "ativo", "ordem")
 
 
-class CategoriaAuxiliarListView(LoginRequiredMixin, PageTitleMixin, SingleTableView):
+class CategoriaAuxiliarListView(CadastrosGeraisMixin, SingleTableView):
     model = CategoriaAuxiliar
     table_class = CategoriaAuxiliarTable
     template_name = "cadastros_gerais/auxiliar_categoria_list.html"
@@ -197,7 +203,7 @@ class CategoriaAuxiliarListView(LoginRequiredMixin, PageTitleMixin, SingleTableV
     page_title = _("Categorias Auxiliares")
 
 
-class ItemAuxiliarListView(LoginRequiredMixin, PageTitleMixin, SingleTableView):
+class ItemAuxiliarListView(CadastrosGeraisMixin, SingleTableView):
     model = ItemAuxiliar
     table_class = ItemAuxiliarTable
     template_name = "cadastros_gerais/auxiliar_item_list.html"
@@ -236,13 +242,19 @@ TIPOS_CAMPO = (
 class ItemAuxiliarForm(forms.ModelForm):
     # Campos amigáveis para popular config
     tipo_campo = forms.ChoiceField(
-        choices=TIPOS_CAMPO, label=_("Tipo de Campo"), widget=forms.Select(attrs={"class": "form-select"})
+        choices=TIPOS_CAMPO,
+        label=_("Tipo de Campo"),
+        widget=forms.Select(attrs={"class": "form-select"}),
     )
     obrigatorio = forms.BooleanField(
-        label=_("Obrigatório"), required=False, widget=forms.CheckboxInput(attrs={"class": "form-check-input"})
+        label=_("Obrigatório"),
+        required=False,
+        widget=forms.CheckboxInput(attrs={"class": "form-check-input"}),
     )
     multiplos = forms.BooleanField(
-        label=_("Permitir múltiplos"), required=False, widget=forms.CheckboxInput(attrs={"class": "form-check-input"})
+        label=_("Permitir múltiplos"),
+        required=False,
+        widget=forms.CheckboxInput(attrs={"class": "form-check-input"}),
     )
     extensoes_permitidas = forms.CharField(
         label=_("Extensões permitidas"),
@@ -257,7 +269,9 @@ class ItemAuxiliarForm(forms.ModelForm):
         widget=forms.NumberInput(attrs={"class": "form-control"}),
     )
     validade_dias = forms.IntegerField(
-        label=_("Validade (dias)"), required=False, widget=forms.NumberInput(attrs={"class": "form-control"})
+        label=_("Validade (dias)"),
+        required=False,
+        widget=forms.NumberInput(attrs={"class": "form-control"}),
     )
     opcoes = forms.CharField(
         label=_("Opções (para Seleção, separadas por vírgula)"),
@@ -360,7 +374,7 @@ class ItemAuxiliarForm(forms.ModelForm):
         return instance
 
 
-class CategoriaAuxiliarCreateView(LoginRequiredMixin, PageTitleMixin, CreateView):
+class CategoriaAuxiliarCreateView(CadastrosGeraisMixin, CreateView):
     model = CategoriaAuxiliar
     form_class = CategoriaAuxiliarForm
     template_name = "cadastros_gerais/auxiliar_categoria_form.html"
@@ -368,7 +382,7 @@ class CategoriaAuxiliarCreateView(LoginRequiredMixin, PageTitleMixin, CreateView
     page_title = _("Nova Categoria Auxiliar")
 
 
-class CategoriaAuxiliarUpdateView(LoginRequiredMixin, PageTitleMixin, UpdateView):
+class CategoriaAuxiliarUpdateView(CadastrosGeraisMixin, UpdateView):
     model = CategoriaAuxiliar
     form_class = CategoriaAuxiliarForm
     template_name = "cadastros_gerais/auxiliar_categoria_form.html"
@@ -376,13 +390,13 @@ class CategoriaAuxiliarUpdateView(LoginRequiredMixin, PageTitleMixin, UpdateView
     page_title = _("Editar Categoria Auxiliar")
 
 
-class CategoriaAuxiliarDeleteView(LoginRequiredMixin, PageTitleMixin, DeleteView):
+class CategoriaAuxiliarDeleteView(CadastrosGeraisMixin, DeleteView):
     model = CategoriaAuxiliar
     template_name = "cadastros_gerais/generic_confirm_delete.html"
     success_url = reverse_lazy("cadastros_gerais:categoria_aux_list")
 
 
-class ItemAuxiliarCreateView(LoginRequiredMixin, PageTitleMixin, CreateView):
+class ItemAuxiliarCreateView(CadastrosGeraisMixin, CreateView):
     model = ItemAuxiliar
     form_class = ItemAuxiliarForm
     template_name = "cadastros_gerais/auxiliar_item_form.html"
@@ -390,7 +404,7 @@ class ItemAuxiliarCreateView(LoginRequiredMixin, PageTitleMixin, CreateView):
     page_title = _("Novo Item Auxiliar")
 
 
-class ItemAuxiliarUpdateView(LoginRequiredMixin, PageTitleMixin, UpdateView):
+class ItemAuxiliarUpdateView(CadastrosGeraisMixin, UpdateView):
     model = ItemAuxiliar
     form_class = ItemAuxiliarForm
     template_name = "cadastros_gerais/auxiliar_item_form.html"
@@ -398,7 +412,7 @@ class ItemAuxiliarUpdateView(LoginRequiredMixin, PageTitleMixin, UpdateView):
     page_title = _("Editar Item Auxiliar")
 
 
-class ItemAuxiliarDeleteView(LoginRequiredMixin, PageTitleMixin, DeleteView):
+class ItemAuxiliarDeleteView(CadastrosGeraisMixin, DeleteView):
     model = ItemAuxiliar
     template_name = "cadastros_gerais/generic_confirm_delete.html"
     success_url = reverse_lazy("cadastros_gerais:item_aux_list")

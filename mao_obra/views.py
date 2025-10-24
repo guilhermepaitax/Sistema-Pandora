@@ -11,7 +11,7 @@ from django.urls import reverse, reverse_lazy
 from django.utils.translation import gettext_lazy as _
 from django.views.generic import CreateView, DeleteView, DetailView, ListView, UpdateView
 
-from core.mixins import PageTitleMixin, TenantRequiredMixin
+from core.mixins import ModuleRequiredMixin, PageTitleMixin, TenantRequiredMixin
 from core.utils import get_current_tenant
 from shared.mixins.ui_permissions import UIPermissionsMixin
 
@@ -21,9 +21,7 @@ from .models import MaoObra
 
 @login_required
 def mao_obra_home(request):
-    """
-    View para o dashboard de Mão de Obra, mostrando estatísticas e dados relevantes.
-    """
+    """View para o dashboard de Mão de Obra, mostrando estatísticas e dados relevantes."""
     template_name = "mao_obra/mao_obra_home.html"
     tenant = get_current_tenant(request)
 
@@ -66,8 +64,10 @@ def mao_obra_home(request):
     return render(request, template_name, context)
 
 
-class MaoObraMixin(TenantRequiredMixin):
+class MaoObraMixin(TenantRequiredMixin, ModuleRequiredMixin):
     """Mixin base para views de mão de obra"""
+
+    required_module = "mao_obra"
 
     def get_queryset(self):
         return super().get_queryset().filter(tenant=self.request.tenant)

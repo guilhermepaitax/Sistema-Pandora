@@ -65,13 +65,13 @@ class MultipleFileInput(Widget):
         default_attrs.update(attrs)
         super().__init__(default_attrs)
 
-    def format_value(self, _value: object) -> None:
+    def format_value(self, value: object) -> None:  # noqa: ARG002
         """Formata o valor para exibição; inputs de arquivo não exibem valor."""
         return
 
     def value_from_datadict(
         self,
-        _data: Mapping[str, object],
+        data: Mapping[str, object],  # noqa: ARG002
         files: Mapping[str, object],
         name: str,
     ) -> UploadedFile | Sequence[UploadedFile] | None:
@@ -106,9 +106,9 @@ class MultipleFileInput(Widget):
     def render(
         self,
         name: str,
-        _value: object | None,
+        value: object | None,  # noqa: ARG002
         attrs: dict[str, Any] | None = None,
-        _renderer: object | None = None,
+        renderer: object | None = None,  # noqa: ARG002
     ) -> "SafeText":
         """Renderiza o widget de múltiplos arquivos com padrão ultra-moderno."""
         if attrs is None:
@@ -991,6 +991,8 @@ class TenantConfigurationWizardForm(EditingTenantMixin, forms.ModelForm):
         raw_enabled = getattr(self.instance, "enabled_modules", None)
         if isinstance(raw_enabled, dict):
             existing = raw_enabled.get("modules") or []
+        elif isinstance(raw_enabled, list):
+            existing = list(raw_enabled)
         # Lista inicial levando em conta plano e essenciais
         initial_modules = compute_initial_modules(plan, existing)
         annotated = annotate_modules_for_ui(plan, initial_modules)

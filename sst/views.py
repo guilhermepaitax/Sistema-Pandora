@@ -7,11 +7,18 @@ from django.utils.translation import gettext_lazy as _
 # sst/views.py
 from django.views.generic import CreateView, DeleteView, DetailView, ListView, UpdateView
 
+from core.mixins import ModuleRequiredMixin
 from core.utils import get_current_tenant
 from shared.services.ui_permissions import build_ui_permissions
 
 from .forms import DocumentoSSTForm  # CORRIGIDO para importar DocumentoSSTForm (singular)
 from .models import DocumentoSST  # CORRIGIDO para importar DocumentoSST (singular)
+
+
+class SstMixin(ModuleRequiredMixin):
+    """Mixin base para views de SST."""
+
+    required_module = "sst"
 
 
 @login_required
@@ -36,20 +43,20 @@ def sst_home(request):
     return render(request, template_name, context)
 
 
-class SstListView(ListView):
+class SstListView(SstMixin, ListView):
     model = DocumentoSST  # CORRIGIDO para DocumentoSST (singular)
     template_name = "sst/sst_list_ultra_modern.html"
     context_object_name = "sst_list"  # Pode ser 'documentos_sst_list' para clareza
     paginate_by = 10
 
 
-class SstDetailView(DetailView):
+class SstDetailView(SstMixin, DetailView):
     model = DocumentoSST  # CORRIGIDO para DocumentoSST (singular)
     template_name = "sst/sst_detail_ultra_modern.html"
     context_object_name = "documento_sst"  # Nome do objeto no contexto
 
 
-class SstCreateView(CreateView):
+class SstCreateView(SstMixin, CreateView):
     model = DocumentoSST  # CORRIGIDO para DocumentoSST (singular)
     form_class = DocumentoSSTForm  # CORRIGIDO para DocumentoSSTForm (singular)
     template_name = "sst/sst_form_ultra_modern.html"
@@ -61,7 +68,7 @@ class SstCreateView(CreateView):
         return context
 
 
-class SstUpdateView(UpdateView):
+class SstUpdateView(SstMixin, UpdateView):
     model = DocumentoSST  # CORRIGIDO para DocumentoSST (singular)
     form_class = DocumentoSSTForm  # CORRIGIDO para DocumentoSSTForm (singular)
     template_name = "sst/sst_form_ultra_modern.html"
@@ -73,7 +80,7 @@ class SstUpdateView(UpdateView):
         return context
 
 
-class SstDeleteView(DeleteView):
+class SstDeleteView(SstMixin, DeleteView):
     model = DocumentoSST  # CORRIGIDO para DocumentoSST (singular)
     template_name = "sst/sst_confirm_delete_ultra_modern.html"
     success_url = reverse_lazy("sst:sst_list")

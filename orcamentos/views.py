@@ -7,6 +7,7 @@ from django.urls import reverse, reverse_lazy
 from django.utils.translation import gettext_lazy as _
 from django.views.generic import CreateView, DeleteView, DetailView, ListView, UpdateView
 
+from core.mixins import ModuleRequiredMixin
 from core.utils import get_current_tenant
 from shared.services.ui_permissions import build_ui_permissions
 
@@ -40,7 +41,13 @@ def orcamentos_home(request):
     return render(request, template_name, context)
 
 
-class OrcamentosListView(ListView):  # O nome da classe da View pode ser plural
+class OrcamentosMixin(ModuleRequiredMixin):
+    """Mixin base para views de orçamentos."""
+
+    required_module = "orcamentos"
+
+
+class OrcamentosListView(OrcamentosMixin, ListView):  # O nome da classe da View pode ser plural
     model = Orcamento  # CORRIGIDO para Orcamento (singular)
     template_name = "orcamentos/orcamentos_list_ultra_modern.html"
     context_object_name = "orcamentos_list"
@@ -74,7 +81,7 @@ class OrcamentosListView(ListView):  # O nome da classe da View pode ser plural
         return context
 
 
-class OrcamentosDetailView(DetailView):
+class OrcamentosDetailView(OrcamentosMixin, DetailView):
     model = Orcamento  # CORRIGIDO para Orcamento (singular)
     template_name = "orcamentos/orcamentos_detail_ultra_modern.html"
     context_object_name = "orcamento"  # Convenção: singular para o objeto de detalhe
@@ -92,7 +99,7 @@ class OrcamentosDetailView(DetailView):
         return context
 
 
-class OrcamentosCreateView(CreateView):
+class OrcamentosCreateView(OrcamentosMixin, CreateView):
     model = Orcamento  # CORRIGIDO para Orcamento (singular)
     form_class = OrcamentoForm  # CORRIGIDO para OrcamentoForm (singular)
     template_name = "orcamentos/orcamentos_form_ultra_modern.html"
@@ -112,7 +119,7 @@ class OrcamentosCreateView(CreateView):
         return context
 
 
-class OrcamentosUpdateView(UpdateView):
+class OrcamentosUpdateView(OrcamentosMixin, UpdateView):
     model = Orcamento  # CORRIGIDO para Orcamento (singular)
     form_class = OrcamentoForm  # CORRIGIDO para OrcamentoForm (singular)
     template_name = "orcamentos/orcamentos_form_ultra_modern.html"
@@ -136,7 +143,7 @@ class OrcamentosUpdateView(UpdateView):
         return context
 
 
-class OrcamentosDeleteView(DeleteView):
+class OrcamentosDeleteView(OrcamentosMixin, DeleteView):
     model = Orcamento  # CORRIGIDO para Orcamento (singular)
     template_name = "orcamentos/orcamentos_confirm_delete_ultra_modern.html"
     success_url = reverse_lazy("orcamentos:orcamentos_list")

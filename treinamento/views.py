@@ -7,17 +7,22 @@ from django.utils.translation import gettext_lazy as _
 # treinamento/views.py
 from django.views.generic import CreateView, DeleteView, DetailView, ListView, UpdateView
 
+from core.mixins import ModuleRequiredMixin
 from core.utils import get_current_tenant
 
 from .forms import TreinamentoForm  # CORRIGIDO para importar de .forms
 from .models import Treinamento  # CORRIGIDO para importar de .models
 
 
+class TreinamentoMixin(ModuleRequiredMixin):
+    """Mixin base para views de treinamento."""
+
+    required_module = "treinamento"
+
+
 @login_required
 def treinamento_home(request):
-    """
-    View para o dashboard de Treinamentos, mostrando estatísticas e dados relevantes.
-    """
+    """View para o dashboard de Treinamentos, mostrando estatísticas e dados relevantes."""
     template_name = "treinamento/treinamento_home.html"
     tenant = get_current_tenant(request)
 
@@ -35,7 +40,7 @@ def treinamento_home(request):
     return render(request, template_name, context)
 
 
-class TreinamentoListView(ListView):
+class TreinamentoListView(TreinamentoMixin, ListView):
     model = Treinamento  # Já estava correto
     template_name = "treinamento/treinamento_list_ultra_modern.html"
     context_object_name = "treinamento_list"
@@ -69,7 +74,7 @@ class TreinamentoListView(ListView):
         return context
 
 
-class TreinamentoDetailView(DetailView):
+class TreinamentoDetailView(TreinamentoMixin, DetailView):
     model = Treinamento  # Já estava correto
     template_name = "treinamento/treinamento_detail_ultra_modern.html"
     context_object_name = "treinamento"
@@ -91,7 +96,7 @@ class TreinamentoDetailView(DetailView):
         return context
 
 
-class TreinamentoCreateView(CreateView):
+class TreinamentoCreateView(TreinamentoMixin, CreateView):
     model = Treinamento  # Já estava correto
     form_class = TreinamentoForm  # Já estava correto
     template_name = "treinamento/treinamento_form_ultra_modern.html"
@@ -111,7 +116,7 @@ class TreinamentoCreateView(CreateView):
         return context
 
 
-class TreinamentoUpdateView(UpdateView):
+class TreinamentoUpdateView(TreinamentoMixin, UpdateView):
     model = Treinamento  # Já estava correto
     form_class = TreinamentoForm  # Já estava correto
     template_name = "treinamento/treinamento_form_ultra_modern.html"
@@ -135,7 +140,7 @@ class TreinamentoUpdateView(UpdateView):
         return context
 
 
-class TreinamentoDeleteView(DeleteView):
+class TreinamentoDeleteView(TreinamentoMixin, DeleteView):
     model = Treinamento  # Já estava correto
     template_name = "treinamento/treinamento_confirm_delete_ultra_modern.html"
     success_url = reverse_lazy("treinamento:treinamento_list")

@@ -27,8 +27,29 @@ Detalhes adicionais em `docs/REPO_HYGIENE.md`.
 ## 🧪 Organização dos Testes
 Guia completo: [Guia Unificado de Testes](docs/TESTES_ORGANIZACAO.md) — marcadores, estrutura por domínio, execução segmentada, roadmap de cobertura.
 
-### 🔐 Padrão de Permissões UI (module_key)
-Documentação consolidada dentro de: [PERMISSION_RESOLVER.md](docs/PERMISSION_RESOLVER.md) (seção "Padrão module_key"). Use `module_key` ao criar novas telas para unificar backend/frontend.
+### 🔐 Sistema de Permissões
+Documentação completa e consolidada: **[SISTEMA_PERMISSOES_COMPLETO.md](docs/SISTEMA_PERMISSOES_COMPLETO.md)**
+
+Este documento unifica toda a documentação sobre:
+- Arquitetura multi-camadas (6 camadas de autorização)
+- Hierarquia de usuários (Superuser, Admin, Funcionário, Portal)
+- Permission Resolver (API, cache, invalidação)
+- UI Permissions (padrão module_key)
+- Permissões específicas de módulos
+- Troubleshooting e casos de uso práticos
+
+**Quick Start:**
+```python
+# Verificar permissão simples
+from shared.services.permission_resolver import has_permission
+if has_permission(user, tenant, "CREATE_OBRA"):
+    # Usuário pode criar obra
+
+# UI Permissions (templates)
+from shared.services.ui_permissions import build_ui_permissions
+context['perms_ui'] = build_ui_permissions(user, tenant, module_key='FORNECEDOR')
+# Template: {% if perms_ui.can_add %}...{% endif %}
+```
 
 ## 🚀 Visão Geral Rápida
 
@@ -53,6 +74,7 @@ Plataforma ERP modular, multi-tenant, orientada a domínios (DDD light), com foc
   - Auditoria Técnica Avançada
   - Guia consolidado de gestão de usuários: veja `docs/USER_MANAGEMENT.md`
   - Documentação operacional de 2FA (rotação de chaves, troubleshooting): `docs/TWOFA_SERVICE.md`
+  - **Sistema de Permissões completo**: `docs/SISTEMA_PERMISSOES_COMPLETO.md`
 
 ## 🛠️ Tecnologias
 
@@ -241,7 +263,7 @@ Resumo de melhorias recentes focadas em performance, auditoria e 2FA:
   - Campos de métricas (`twofa_*_count`) já no modelo `PerfilUsuarioEstendido` são atualizados via `register_twofa_result`.
   - Documentação detalhada: `docs/TWOFA_SERVICE.md`.
   - Nota de migração do campo de logs estruturados: `docs/MIGRATION_0012_EXTRA_JSON.md`.
-  - Notas técnicas do Permission Resolver (pipeline, era global, TTL trace): `docs/PERMISSION_RESOLVER_NOTES.md`.
+  - Notas técnicas do Permission Resolver (pipeline, era global, TTL trace): `docs/SISTEMA_PERMISSOES_COMPLETO.md`
   - Criptografia opcional de segredos: definir `TWOFA_ENCRYPT_SECRETS=True` e lista `TWOFA_FERNET_KEYS`.
   - Comando `python manage.py twofa_reencrypt` para migrar segredos legados (usar `--dry-run` primeiro).
   - Comando `python manage.py prune_expired_permissions` remove permissões personalizadas expiradas.
@@ -574,6 +596,8 @@ PERMISSION_RESOLVER_TRACE=True
 ```
 Exemplo de razão com trace: `Role Admin permite VIEW_COTACAO|src=role|trace=role_allow`.
 
+**Para detalhes completos do Permission Resolver:** veja `docs/SISTEMA_PERMISSOES_COMPLETO.md`
+
 Fila dedicada de vídeo (`video`) com worker separado em `docker-compose.yml` (`worker-video`).
 
 ## 🧩 Padrões de Templates (Resumo)
@@ -699,6 +723,8 @@ O `PermissionResolver` agora possui:
   - `permission_resolver_latency_seconds` (buckets p50..p99 baseados em latências sub-milisegundo a 1s)
 - Trace on-demand: habilitar via `settings.PERMISSION_RESOLVER_TRACE=True` (recalcula decisão mesmo com cache para enriquecer razão).
 - Cache versionado por (user, tenant) eliminando necessidade de `delete_pattern` em Redis.
+
+**Documentação completa:** `docs/SISTEMA_PERMISSOES_COMPLETO.md`
 
 Extensão de pipeline (exemplo):
 ```python

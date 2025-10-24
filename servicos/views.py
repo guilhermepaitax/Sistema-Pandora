@@ -15,7 +15,7 @@ from django.views.decorators.http import require_POST
 from django.views.generic import CreateView, DeleteView, DetailView, ListView, UpdateView
 
 # Importa o PageTitleMixin que estava no core/views.py
-from core.mixins import PageTitleMixin, TenantRequiredMixin
+from core.mixins import ModuleRequiredMixin, PageTitleMixin, TenantRequiredMixin
 from core.utils import get_current_tenant
 from shared.services.ui_permissions import build_ui_permissions
 
@@ -38,10 +38,14 @@ from .models import Avaliacao, CategoriaServico, RegraCobranca, Servico, Servico
 # =============================================================================
 
 
-class ServicoDashboardView(LoginRequiredMixin, TenantRequiredMixin, PageTitleMixin, ListView):
-    """
-    Dashboard principal do módulo de serviços com estatísticas gerais
-    """
+class ServicoMixin(LoginRequiredMixin, TenantRequiredMixin, ModuleRequiredMixin, PageTitleMixin):
+    """Mixin base para views de serviços com proteção de módulo"""
+
+    required_module = "servicos"
+
+
+class ServicoDashboardView(ServicoMixin, ListView):
+    """Dashboard principal do módulo de serviços com estatísticas gerais"""
 
     model = Servico
     template_name = "servicos/servicos_home.html"
@@ -78,15 +82,21 @@ class ServicoDashboardView(LoginRequiredMixin, TenantRequiredMixin, PageTitleMix
                 "total_regras_cobranca": RegraCobranca.objects.count(),
                 "titulo": _("Serviços"),
                 "subtitulo": _("Visão geral do módulo Serviços"),
-            }
+            },
         )
         # UI permissions
         ui_perms = build_ui_permissions(self.request.user, tenant, module_key="SERVICO")
         ui_perms_categoria = build_ui_permissions(
-            self.request.user, tenant, app_label="servicos", model_name="categoriaservico"
+            self.request.user,
+            tenant,
+            app_label="servicos",
+            model_name="categoriaservico",
         )
         ui_perms_regra = build_ui_permissions(
-            self.request.user, tenant, app_label="servicos", model_name="regracobranca"
+            self.request.user,
+            tenant,
+            app_label="servicos",
+            model_name="regracobranca",
         )
         context["ui_perms"] = ui_perms
         context["perms_ui"] = ui_perms
@@ -107,7 +117,7 @@ def servicos_home(request):
     return view(request)
 
 
-class BaseServicoListView(LoginRequiredMixin, TenantRequiredMixin, PageTitleMixin, ListView):
+class BaseServicoListView(ServicoMixin, ListView):
     model = Servico
     template_name = "servicos/servico_list.html"
     context_object_name = "servicos"
@@ -129,7 +139,7 @@ class BaseServicoListView(LoginRequiredMixin, TenantRequiredMixin, PageTitleMixi
         busca = self.request.GET.get("busca")
         if busca:
             queryset = queryset.filter(
-                Q(nome_servico__icontains=busca) | Q(descricao_curta__icontains=busca) | Q(codigo__icontains=busca)
+                Q(nome_servico__icontains=busca) | Q(descricao_curta__icontains=busca) | Q(codigo__icontains=busca),
             ).distinct()
         return queryset
 
@@ -162,7 +172,7 @@ class BaseServicoListView(LoginRequiredMixin, TenantRequiredMixin, PageTitleMixi
         return context
 
 
-class BaseServicoCreateView(LoginRequiredMixin, TenantRequiredMixin, PageTitleMixin, CreateView):
+class BaseServicoCreateView(ServicoMixin, CreateView):
     model = Servico
     form_class = ServicoForm
     template_name = "servicos/servico_form.html"
@@ -219,7 +229,7 @@ class BaseServicoCreateView(LoginRequiredMixin, TenantRequiredMixin, PageTitleMi
         return reverse(self.success_url_name, kwargs={"slug": self.object.slug})
 
 
-class BaseServicoUpdateView(LoginRequiredMixin, TenantRequiredMixin, PageTitleMixin, UpdateView):
+class BaseServicoUpdateView(ServicoMixin, UpdateView):
     model = Servico
     form_class = ServicoForm
     template_name = "servicos/servico_form.html"
@@ -243,11 +253,14 @@ class BaseServicoUpdateView(LoginRequiredMixin, TenantRequiredMixin, PageTitleMi
         # Form clínico: se já existir perfil, instancia; senão vazio
         if self.request.POST:
             context["clinico_form"] = ServicoClinicoForm(
-                self.request.POST, instance=getattr(self.object, "perfil_clinico", None), prefix="clinico"
+                self.request.POST,
+                instance=getattr(self.object, "perfil_clinico", None),
+                prefix="clinico",
             )
         else:
             context["clinico_form"] = ServicoClinicoForm(
-                instance=getattr(self.object, "perfil_clinico", None), prefix="clinico"
+                instance=getattr(self.object, "perfil_clinico", None),
+                prefix="clinico",
             )
         return context
 
@@ -324,7 +337,9 @@ class ServicoRecebidoUpdateView(BaseServicoUpdateView):
         context = super().get_context_data(**kwargs)
         if self.request.POST:
             context["fornecedores_formset"] = ServicoFornecedorFormSet(
-                self.request.POST, instance=self.object, prefix="fornecedores"
+                self.request.POST,
+                instance=self.object,
+                prefix="fornecedores",
             )
         else:
             context["fornecedores_formset"] = ServicoFornecedorFormSet(instance=self.object, prefix="fornecedores")
@@ -364,7 +379,7 @@ class ServicoRecebidoUpdateView(BaseServicoUpdateView):
 # =============================================================================
 
 
-class ServicoDetailView(LoginRequiredMixin, TenantRequiredMixin, PageTitleMixin, DetailView):
+class ServicoDetailView(ServicoMixin, DetailView):
     model = Servico
     template_name = "servicos/servico_detail.html"
     context_object_name = "servico"
@@ -390,13 +405,14 @@ class ServicoDetailView(LoginRequiredMixin, TenantRequiredMixin, PageTitleMixin,
 
         if servico.tipo_servico == "RECEBIDO":
             context["fornecedores_servico"] = servico.servicofornecedor_set.all().select_related(
-                "fornecedor", "regra_cobranca_fornecedor"
+                "fornecedor",
+                "regra_cobranca_fornecedor",
             )
 
         return context
 
 
-class ServicoDeleteView(LoginRequiredMixin, TenantRequiredMixin, PageTitleMixin, DeleteView):
+class ServicoDeleteView(ServicoMixin, DeleteView):
     model = Servico
     template_name = "servicos/servico_confirm_delete.html"
     slug_field = "slug"
@@ -526,7 +542,7 @@ def servico_documento_download(request, pk):
 # =============================================================================
 
 
-class CategoriaServicoListView(LoginRequiredMixin, TenantRequiredMixin, PageTitleMixin, ListView):
+class CategoriaServicoListView(ServicoMixin, ListView):
     model = CategoriaServico
     template_name = "servicos/servico_categoria_list.html"
     context_object_name = "object_list"
@@ -541,7 +557,7 @@ class CategoriaServicoListView(LoginRequiredMixin, TenantRequiredMixin, PageTitl
         return queryset
 
 
-class CategoriaServicoCreateView(LoginRequiredMixin, TenantRequiredMixin, PageTitleMixin, CreateView):
+class CategoriaServicoCreateView(ServicoMixin, CreateView):
     model = CategoriaServico
     form_class = CategoriaServicoForm
     template_name = "servicos/servico_categoria_form.html"
@@ -560,7 +576,7 @@ class CategoriaServicoCreateView(LoginRequiredMixin, TenantRequiredMixin, PageTi
         return super().form_invalid(form)
 
 
-class CategoriaServicoUpdateView(LoginRequiredMixin, TenantRequiredMixin, PageTitleMixin, UpdateView):
+class CategoriaServicoUpdateView(ServicoMixin, UpdateView):
     model = CategoriaServico
     form_class = CategoriaServicoForm
     template_name = "servicos/servico_categoria_form.html"
@@ -589,7 +605,7 @@ class CategoriaServicoUpdateView(LoginRequiredMixin, TenantRequiredMixin, PageTi
         return super().form_invalid(form)
 
 
-class CategoriaServicoDeleteView(LoginRequiredMixin, TenantRequiredMixin, PageTitleMixin, DeleteView):
+class CategoriaServicoDeleteView(ServicoMixin, DeleteView):
     model = CategoriaServico
     template_name = "servicos/servico_confirm_delete.html"
     success_url = reverse_lazy("servicos:categoria_list")
@@ -713,7 +729,7 @@ def unidades_medida_options(request):
     return JsonResponse({"results": data})
 
 
-class RegraCobrancaListView(LoginRequiredMixin, TenantRequiredMixin, PageTitleMixin, ListView):
+class RegraCobrancaListView(ServicoMixin, ListView):
     model = RegraCobranca
     template_name = "servicos/regra_cobranca_list.html"
     context_object_name = "object_list"
@@ -728,7 +744,7 @@ class RegraCobrancaListView(LoginRequiredMixin, TenantRequiredMixin, PageTitleMi
         return queryset
 
 
-class RegraCobrancaCreateView(LoginRequiredMixin, TenantRequiredMixin, PageTitleMixin, CreateView):
+class RegraCobrancaCreateView(ServicoMixin, CreateView):
     model = RegraCobranca
     form_class = RegraCobrancaForm
     template_name = "servicos/regra_cobranca_form.html"
@@ -743,7 +759,7 @@ class RegraCobrancaCreateView(LoginRequiredMixin, TenantRequiredMixin, PageTitle
         return super().form_valid(form)
 
 
-class RegraCobrancaUpdateView(LoginRequiredMixin, TenantRequiredMixin, PageTitleMixin, UpdateView):
+class RegraCobrancaUpdateView(ServicoMixin, UpdateView):
     model = RegraCobranca
     form_class = RegraCobrancaForm
     template_name = "servicos/regra_cobranca_form.html"
@@ -767,7 +783,7 @@ class RegraCobrancaUpdateView(LoginRequiredMixin, TenantRequiredMixin, PageTitle
         return super().form_valid(form)
 
 
-class RegraCobrancaDeleteView(LoginRequiredMixin, TenantRequiredMixin, PageTitleMixin, DeleteView):
+class RegraCobrancaDeleteView(ServicoMixin, DeleteView):
     model = RegraCobranca
     template_name = "servicos/generic_confirm_delete.html"
     success_url = reverse_lazy("servicos:regra_cobranca_list")
@@ -807,14 +823,13 @@ def servico_avaliacao_add(request, servico_slug):
             avaliacao.save()
             messages.success(request, _("Sua avaliação foi enviada e aguarda moderação. Obrigado!"))
             return redirect(servico.get_absolute_url() + "#avaliacoes")
-        else:
-            error_list = "<ul class='list-unstyled mb-0'>"
-            for field, errors in form.errors.items():
-                for error in errors:
-                    error_list += f"<li>{form.fields[field].label if field != '__all__' else ''}: {error}</li>"
-            error_list += "</ul>"
-            messages.error(request, _("Erro ao submeter sua avaliação:") + error_list, extra_tags="safe")
-            return redirect(servico.get_absolute_url() + "#avaliacoes-form-section")
+        error_list = "<ul class='list-unstyled mb-0'>"
+        for field, errors in form.errors.items():
+            for error in errors:
+                error_list += f"<li>{form.fields[field].label if field != '__all__' else ''}: {error}</li>"
+        error_list += "</ul>"
+        messages.error(request, _("Erro ao submeter sua avaliação:") + error_list, extra_tags="safe")
+        return redirect(servico.get_absolute_url() + "#avaliacoes-form-section")
 
     return redirect(servico.get_absolute_url())
 
@@ -866,7 +881,7 @@ def calcular_preco_servico(request, servico_slug):
                         "preco_calculado": float(preco),
                         "preco_formatado": f"R$ {preco:_.2f}".replace(".", ",").replace("_", "."),
                         "success": True,
-                    }
+                    },
                 )
             except Exception:
                 return JsonResponse({"error": _("Erro interno ao calcular o preço."), "success": False}, status=500)

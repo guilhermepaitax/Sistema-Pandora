@@ -6,13 +6,17 @@ from django.urls import reverse
 from django.utils import timezone
 from django.views import generic
 
+from core.mixins import ModuleRequiredMixin
+
 from .forms import AgendamentoForm, DisponibilidadeForm, ReagendarForm
 from .models import STATUS_AGENDAMENTO, Agendamento, AuditoriaAgendamento, Disponibilidade, Slot, WaitlistEntry
 from .services import AgendamentoService, SlotService
 
 
-class TenantMixin:
+class TenantMixin(ModuleRequiredMixin):
     """Mixin simples para obter tenant do request (assumindo request.user.tenant)."""
+
+    required_module = "agendamentos"
 
     def get_tenant(self):  # pragma: no cover - dependente de auth
         user = getattr(self.request, "user", None)
@@ -85,7 +89,7 @@ class AgendamentoListView(TenantMixin, generic.ListView):
         from servicos.models import Servico
 
         ctx["servicos"] = Servico.objects.filter(tenant=self.get_tenant(), ativo=True, is_clinical=True).order_by(
-            "nome_servico"
+            "nome_servico",
         )
         full_qs = self.get_queryset()
         total = full_qs.count()
@@ -130,7 +134,7 @@ class AgendamentoListView(TenantMixin, generic.ListView):
                 "icon": "fas fa-eye",
                 "title": "Ver",
                 "class": "btn-outline-primary",
-            }
+            },
         ]
         # Ajuste de ordering dinâmico (não interfere na lógica de query principal)
         ordering = self.request.GET.get("ordering")
@@ -265,8 +269,9 @@ class SlotListView(TenantMixin, generic.ListView):
             qs = qs.filter(profissional_id=profissional)
         qs = qs.annotate(
             agendamentos_confirmados=Count(
-                "agendamentos", filter=Q(agendamentos__status__in=["PENDENTE", "CONFIRMADO", "EM_ANDAMENTO"])
-            )
+                "agendamentos",
+                filter=Q(agendamentos__status__in=["PENDENTE", "CONFIRMADO", "EM_ANDAMENTO"]),
+            ),
         )
         return qs
 
@@ -283,7 +288,7 @@ class SlotListView(TenantMixin, generic.ListView):
             from servicos.models import Servico
 
             ctx["servicos"] = Servico.objects.filter(tenant=self.get_tenant(), ativo=True, is_clinical=True).order_by(
-                "nome"
+                "nome",
             )[:500]
         except Exception:
             ctx["servicos"] = []
@@ -376,7 +381,10 @@ def waitlist_inscrever_view(request, slot_id):  # pragma: no cover - UI
             cliente = get_object_or_404(Cliente, pk=cliente_id)
             try:
                 WaitlistEntry.objects.get_or_create(
-                    tenant=slot.tenant, slot=slot, cliente=cliente, defaults={"prioridade": 100, "status": "ATIVO"}
+                    tenant=slot.tenant,
+                    slot=slot,
+                    cliente=cliente,
+                    defaults={"prioridade": 100, "status": "ATIVO"},
                 )
                 messages.success(request, "Cliente adicionado à lista de espera.")
             except Exception as e:

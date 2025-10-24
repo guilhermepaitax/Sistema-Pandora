@@ -13,7 +13,7 @@ from django.utils.translation import gettext_lazy as _
 from django.views.decorators.http import require_POST
 from django.views.generic import CreateView, DeleteView, DetailView, ListView, UpdateView
 
-from core.mixins import PageTitleMixin, TenantRequiredMixin
+from core.mixins import ModuleRequiredMixin, PageTitleMixin, TenantRequiredMixin
 from core.utils import get_current_tenant
 from shared.mixins.ui_permissions import UIPermissionsMixin
 from shared.services.ui_permissions import build_ui_permissions
@@ -42,9 +42,7 @@ from .models import (
 
 @login_required
 def funcionarios_home(request):
-    """
-    View para o dashboard de funcionários, mostrando estatísticas e dados relevantes.
-    """
+    """View para o dashboard de funcionários, mostrando estatísticas e dados relevantes."""
     template_name = "funcionarios/funcionarios_home.html"
     tenant = get_current_tenant(request)
 
@@ -68,7 +66,7 @@ def funcionarios_home(request):
     # Aniversariantes do mês
     mes_atual = datetime.now().month
     aniversariantes = funcionarios_qs.filter(data_nascimento__month=mes_atual, ativo=True).order_by(
-        "data_nascimento__day"
+        "data_nascimento__day",
     )
 
     # Top 5 Departamentos
@@ -95,13 +93,14 @@ def funcionarios_home(request):
                     "solicitacoes_pendentes": solicitacoes_qs.filter(status="PENDENTE").count(),
                     "solicitacoes_aprovadas": solicitacoes_qs.filter(status="APROVADA").count(),
                     "solicitacoes_entregues": solicitacoes_qs.filter(status="ENTREGUE").count(),
-                }
+                },
             )
 
             # Responsabilidades ativas
             # ResponsabilidadeMaterial não possui campo tenant direto; filtra via funcionario__tenant
             responsabilidades_ativas = ResponsabilidadeMaterial.objects.filter(
-                funcionario__tenant=tenant, status="ATIVO"
+                funcionario__tenant=tenant,
+                status="ATIVO",
             ).count()
             materiais_stats["responsabilidades_ativas"] = responsabilidades_ativas
 
@@ -128,8 +127,10 @@ def funcionarios_home(request):
     return render(request, template_name, context)
 
 
-class FuncionarioMixin(TenantRequiredMixin):
+class FuncionarioMixin(TenantRequiredMixin, ModuleRequiredMixin):
     """Mixin base para views de funcionários"""
+
+    required_module = "funcionarios"
 
     def get_queryset(self):
         return super().get_queryset().filter(tenant=self.request.tenant)
@@ -235,7 +236,7 @@ class FuncionarioDetailView(UIPermissionsMixin, FuncionarioMixin, PageTitleMixin
                 "regras_remuneracao": funcionario.regras_remuneracao.filter(ativo=True).order_by("tipo_regra"),
                 "dependentes": funcionario.dependentes.all(),
                 "horarios_trabalho": funcionario.horarios.filter(ativo=True).order_by("dia_semana", "ordem"),
-            }
+            },
         )
         return context
 
@@ -690,10 +691,14 @@ class FuncionarioCompleteView(FuncionarioMixin, PageTitleMixin, UpdateView):
 
         if self.request.POST:
             context["dependente_formset"] = DependenteFormSet(
-                self.request.POST, instance=self.object, prefix="dependentes"
+                self.request.POST,
+                instance=self.object,
+                prefix="dependentes",
             )
             context["horario_formset"] = HorarioTrabalhoFormSet(
-                self.request.POST, instance=self.object, prefix="horarios"
+                self.request.POST,
+                instance=self.object,
+                prefix="horarios",
             )
         else:
             context["dependente_formset"] = DependenteFormSet(instance=self.object, prefix="dependentes")
@@ -754,7 +759,8 @@ def relatorio_ponto_funcionario(request, funcionario_pk):
         return redirect("funcionarios:funcionario_detail", pk=funcionario_pk)
 
     registros = CartaoPonto.objects.filter(
-        funcionario=funcionario, data_hora_registro__date__range=[data_inicio, data_fim]
+        funcionario=funcionario,
+        data_hora_registro__date__range=[data_inicio, data_fim],
     ).order_by("data_hora_registro")
 
     context = {

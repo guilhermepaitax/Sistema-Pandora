@@ -33,6 +33,9 @@ def test_agendamento_home_view_authenticated(
     membership = user_logado.tenant_memberships.first()
     assert membership is not None, "Usuário de teste precisa ter tenant membership"
     user_tenant = membership.tenant
+    # Habilitar módulos necessários no tenant
+    user_tenant.enabled_modules = {"modules": ["agendamentos", "servicos", "clientes"]}
+    user_tenant.save(update_fields=["enabled_modules"])
     pwd = os.environ.get("TEST_PASSWORD", "x")
     profissional = CustomUser.objects.create_user("prof_ag", password=pwd)
     categoria = CategoriaServico.objects.create(nome="Cat", slug="cat")

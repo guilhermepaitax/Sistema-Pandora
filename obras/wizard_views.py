@@ -18,6 +18,7 @@ from django.urls import reverse, reverse_lazy
 from django.utils.translation import gettext_lazy as _
 
 from clientes.models import Cliente
+from core.models import TenantUser
 from core.utils import get_current_tenant
 from core.wizard_forms import TenantAddressWizardForm
 from core.wizard_views import TenantCreationWizardView
@@ -75,6 +76,55 @@ class ObraWizardView(TenantCreationWizardView):
     """Wizard de criação/edição de Obras com UI de passos e preview."""
 
     success_url = reverse_lazy("obras:obras_list")
+
+    def test_func(self) -> bool:
+        """Permite superusuário OU admin do tenant com módulo obras habilitado.
+
+        Esta verificação ocorre antes de dispatch() e substitui a verificação
+        da classe pai que restringe apenas a superusuários.
+
+        Regras de acesso:
+        1. Superusuários têm acesso total (gerenciam todas as obras)
+        2. Usuários comuns precisam:
+           - Estar autenticados
+           - Ter um tenant selecionado
+           - Ser administrador do tenant (is_tenant_admin=True)
+           - Tenant precisa ter o módulo 'obras' habilitado
+
+        Returns:
+            bool: True se o usuário tem permissão, False caso contrário
+
+        """
+        user = self.request.user
+
+        # Superusuário sempre tem acesso total
+        if user.is_superuser:
+            return True
+
+        # Usuário precisa estar autenticado
+        if not user.is_authenticated:
+            return False
+
+        # Obtém o tenant atual da sessão
+        tenant = get_current_tenant(self.request)
+        if not tenant:
+            # Sem tenant selecionado, nega acesso
+            # (UserPassesTestMixin redirecionará para login ou página de negação)
+            return False
+
+        # Verifica se o usuário é administrador do tenant
+        is_admin = TenantUser.objects.filter(
+            tenant=tenant,
+            user=user,
+            is_tenant_admin=True,
+        ).exists()
+
+        if not is_admin:
+            return False
+
+        # Verifica se o módulo 'obras' está habilitado para este tenant
+        # Nota: A verificação adicional em get()/post() fornece mensagem mais amigável
+        return tenant.is_module_enabled("obras")
 
     @property
     def wizard_steps(self) -> dict[int, dict[str, Any]]:

@@ -656,79 +656,90 @@ class Tenant(TimestampedModel):
         return getattr(self, "status", None) == "active"
 
     @property
-    def modules(self) -> dict[str, Any]:  # pragma: no cover
-        """Legacy-like view of enabled modules as a dict with "modules" list.
+    def modules(self) -> dict[str, Any]:
+        """Retorna enabled_modules no formato moderno: {"modules": [...], "mod": {"enabled": True}}.
 
-        Suporta representações:
-        - list[str]: retorna {"modules": [...]}.
-        - dict com chave "modules": retorna como está.
-        - dict mapa de flags: converte chaves habilitadas em lista.
+        FORMATO ÚNICO E DEFINITIVO - sem suporte a formatos legados.
+        Se o campo não estiver no formato correto, retorna estrutura vazia.
         """
         raw = self.enabled_modules
-        if isinstance(raw, list):
-            return {"modules": list(raw)}
-        if isinstance(raw, dict):
-            if "modules" in raw and isinstance(raw["modules"], (list, tuple)):
-                return {"modules": list(raw["modules"])}
-            # mapa de flags
-            enabled = [
-                k
-                for k, v in raw.items()
-                if (isinstance(v, dict) and v.get("enabled") in (True, 1, "on", "ON")) or v in (True, 1, "on", "ON")
-            ]
-            return {"modules": enabled}
+        if isinstance(raw, dict) and "modules" in raw and isinstance(raw["modules"], list):
+            return raw
+        # Formato inválido: retornar estrutura vazia
         return {"modules": []}
 
     @modules.setter
-    def modules(self, value: dict[str, Any] | list[str] | None) -> None:  # pragma: no cover
-        """Setter tolerante para enabled_modules (persiste dict composto)."""
-        if value is None:
+    def modules(self, value: dict[str, Any] | list[str] | None) -> None:
+        """Setter que SEMPRE normaliza para formato moderno único.
+
+        Aceita dict ou lista mas SEMPRE persiste no formato moderno.
+        """
+        if value is None or (isinstance(value, (list, dict)) and not value):
             self.enabled_modules = {"modules": []}
-        elif isinstance(value, list):
-            self.enabled_modules = self._compose_enabled_modules_dict(list(value))
-        elif isinstance(value, dict):
-            norm = self._normalize_enabled_modules(value)
-            self.enabled_modules = self._compose_enabled_modules_dict(norm.get("modules", []))
-        else:
-            self.enabled_modules = {"modules": []}
+            return
+
+        # Se já é dict no formato correto, usar direto
+        if isinstance(value, dict) and "modules" in value and isinstance(value["modules"], list):
+            self.enabled_modules = value
+            return
+
+        # Converter lista para formato moderno
+        if isinstance(value, list):
+            self.enabled_modules = self._compose_enabled_modules_dict(value)
+            return
+
+        # Dict legado sem "modules": extrair módulos com enabled=True
+        if isinstance(value, dict):
+            enabled_mods = [key for key, val in value.items() if isinstance(val, dict) and val.get("enabled") is True]
+            self.enabled_modules = self._compose_enabled_modules_dict(enabled_mods)
+            return
+
+        # Fallback: estrutura vazia
+        self.enabled_modules = {"modules": []}
 
     def has_module(self, code: str) -> bool:
-        """Check if a module is enabled for the tenant."""
+        """Verifica se módulo está habilitado - FORMATO MODERNO ÚNICO.
+
+        Usa acesso direto ao dict para O(1) performance.
+        """
         if code == "core":
-            return True
-        mods = self.modules
-        # Formato novo tolerante {"modules": [..]}
-        if isinstance(mods, dict):
-            if "modules" in mods and isinstance(mods["modules"], list):
-                return code in mods["modules"]
-            data = mods.get(code)
-            if isinstance(data, dict):
-                val = data.get("enabled")
-                return val in (True, 1, "on", "ON")
+            return True  # core sempre disponível
+
+        # Formato moderno: verificar flag individual OU presença na lista
+        if isinstance(self.enabled_modules, dict):
+            # Verificação rápida O(1) usando flag
+            module_flag = self.enabled_modules.get(code)
+            if isinstance(module_flag, dict) and module_flag.get("enabled") is True:
+                return True
+
+            # Fallback: verificar lista (caso flags não existam)
+            modules_list = self.enabled_modules.get("modules", [])
+            return code in modules_list
+
         return False
 
     @staticmethod
     def _is_truthy_flag(value: object) -> bool:
-        """Return True when a legacy flag value indicates an enabled module."""
-        if isinstance(value, (bool, int, str)):
-            return value in (True, 1, "on", "ON")
-        return False
+        """REMOVIDO - Não mais necessário no formato moderno."""
+        return value is True
 
     @staticmethod
     def _normalize_enabled_modules(raw: dict | list | str | None) -> dict[str, list[str]]:
-        """Normalize the enabled_modules field to a canonical format."""
+        """Normaliza QUALQUER formato para formato moderno: {"modules": [...]}.
+
+        NOTA: Usado apenas durante migração de dados legados.
+        Novos dados devem usar _compose_enabled_modules_dict diretamente.
+        """
         if isinstance(raw, dict):
-            if "modules" in raw and isinstance(raw["modules"], list | tuple):
+            if "modules" in raw and isinstance(raw["modules"], (list, tuple)):
+                # Já está no formato moderno
                 return {"modules": list(dict.fromkeys([str(m).strip() for m in raw["modules"] if m]))}
-            enabled = [
-                key
-                for key, value in raw.items()
-                if (isinstance(value, dict) and Tenant._is_truthy_flag(value.get("enabled")))
-                or Tenant._is_truthy_flag(value)
-            ]
+
+            # Formato legado: dict de flags {mod: {enabled: True/False}}
+            enabled = [key for key, value in raw.items() if isinstance(value, dict) and value.get("enabled") is True]
             return {"modules": list(dict.fromkeys(enabled))}
 
-        if isinstance(raw, list | tuple):
+        if isinstance(raw, (list, tuple)):
             return {"modules": list(dict.fromkeys([str(m).strip() for m in raw if m]))}
 
         if isinstance(raw, str):
@@ -772,53 +783,39 @@ class Tenant(TimestampedModel):
     def _apply_plan_and_essentials(self) -> None:
         """Aplica regras de módulos com base no plano e assegura essenciais.
 
+        VERSÃO SIMPLIFICADA - trabalha apenas com formato moderno.
+
         Regras:
-        - Essenciais sempre presentes logicamente (persistidos se ausentes para consistência futura).
-        - Quando o campo já foi explicitamente configurado (dict/list/str não vazio),
-          considera-se seleção manual e NÃO adiciona defaults do plano (apenas garante essenciais).
-        - Quando o campo está vazio/indefinido, aplica-se os defaults do plano (exceto CUSTOM).
-        - Para CUSTOM: sempre preservar seleção manual (apenas garantir essenciais).
-        - Normaliza para formato {'modules': [...]}.
+        - Se enabled_modules já configurado (não vazio) → preserva seleção + adiciona essenciais
+        - Se enabled_modules vazio E plano != CUSTOM → aplica defaults do plano + essenciais
+        - Se plano == CUSTOM → apenas garante essenciais
+        - SEMPRE normaliza para formato moderno: {"modules": [...], "mod": {"enabled": True}}
         """
         raw = self.enabled_modules
-        # Foi configurado manualmente? (qualquer representação não vazia)
-        manual_config = bool(raw)
+        manual_config = bool(raw and isinstance(raw, dict) and raw.get("modules"))
 
-        # Extrair sinalizações explícitas do formato legado: {mod: {enabled: True/False}, ...}
-        explicit_enabled: set[str] = set()
-        explicit_disabled: set[str] = set()
-        if isinstance(raw, dict) and "modules" not in raw:
-            for k, v in raw.items():
-                if isinstance(v, dict) and "enabled" in v:
-                    if v.get("enabled") in (True, 1, "on", "ON"):
-                        explicit_enabled.add(k)
-                    else:
-                        explicit_disabled.add(k)
-                elif isinstance(v, (bool, int, str)):
-                    if v in (True, 1, "on", "ON"):
-                        explicit_enabled.add(k)
-                    else:
-                        explicit_disabled.add(k)
+        # Extrair módulos atuais (formato moderno)
+        current = set()
+        if isinstance(raw, dict) and "modules" in raw and isinstance(raw["modules"], list):
+            current = set(raw["modules"])
 
-        # Base atual normalizada (captura também casos de lista/CSV)
-        current = set(self._normalize_enabled_modules(raw).get("modules", []))
-        # Combinar com os explicitamente habilitados no formato legado
-        combined = set(current) | explicit_enabled
+        combined = set(current)
 
-        # Plano e defaults somente quando NÃO houver configuração manual
+        # Aplicar defaults do plano se não houver configuração manual
         plan = getattr(self, "plano_assinatura", "BASIC") or "BASIC"
         plan = plan if plan in self.PLAN_DEFAULT_MODULES else "BASIC"
-        if not manual_config and plan != "CUSTOM":
-            for m in self.PLAN_DEFAULT_MODULES.get(plan, []):
-                # Não incluir defaults explicitamente desabilitados por configuração legada
-                if m not in explicit_disabled:
-                    combined.add(m)
 
-        # Garantir essenciais
+        if not manual_config and plan != "CUSTOM":
+            # Adicionar módulos default do plano
+            combined.update(self.PLAN_DEFAULT_MODULES.get(plan, []))
+
+        # SEMPRE garantir essenciais (mesmo com configuração manual)
         combined.update(self.ESSENTIAL_TENANT_MODULES)
-        # Remover placeholders vazios e persistir no formato canônico
+
+        # Remover vazios e ordenar
         final_list = sorted(m for m in combined if m)
-        # Persistir como dict composto (compat .get("modules") e membership por chave)
+
+        # Persistir SEMPRE no formato moderno único
         self.enabled_modules = self._compose_enabled_modules_dict(final_list)
 
     def recompute_modules_from_plan(self, *, persist: bool = True) -> list[str]:

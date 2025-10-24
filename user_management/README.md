@@ -28,7 +28,11 @@ Regras backend:
 Falhas incrementam tentativas e aplicam bloqueio temporário (>=5 → 30 min + status BLOQUEADO).
 
 ## Permissões
-Resolver unificado (`permission_resolver.resolve(user, tenant, ACTION, resource)`) ou API estruturada (`permission_resolver.resolve_decision(...)`) que retorna `PermissionDecision` (documentação consolidada em `docs/PERMISSION_RESOLVER.md`; lá também existe `explain_permission` para depuração):
+Resolver unificado (`permission_resolver.resolve(user, tenant, ACTION, resource)`) ou API estruturada (`permission_resolver.resolve_decision(...)`) que retorna `PermissionDecision`.
+
+**Documentação completa consolidada:** `docs/SISTEMA_PERMISSOES_COMPLETO.md`
+
+Ordem de precedência:
 1. Bloqueios conta.
 2. Permissões personalizadas ordenadas por score (deny > allow; scoped+resource > scoped > global+resource > global).
 3. Role do tenant.

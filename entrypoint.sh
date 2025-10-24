@@ -78,13 +78,45 @@ PY
   done
 }
 
-if [ "${SKIP_STARTUP_MIGRATIONS}" != "1" ]; then
-  run_migrations || exit 1
-else
-  echo "[entrypoint] SKIP_STARTUP_MIGRATIONS=1 -> pulando migrate"
+MIGRATION_SENTINEL_FILE="/data/.migrations_done"
+# Se sentinel existir e não houver novas migrations pendentes, podemos pular
+should_run_migrations=1
+if [ -f "$MIGRATION_SENTINEL_FILE" ]; then
+  if python manage.py showmigrations --plan | grep -q "\[ ]"; then
+    echo "[entrypoint] Sentinel encontrado mas ainda há migrations pendentes -> executando"
+  else
+    echo "[entrypoint] Todas as migrations já aplicadas (sentinel). Pule usando SKIP_STARTUP_MIGRATIONS ou sentinel."
+    should_run_migrations=0
+  fi
 fi
 
-# collectstatic removido do runtime (feito em build). RUN_COLLECTSTATIC descontinuado.
+if [ "${SKIP_STARTUP_MIGRATIONS}" = "1" ]; then
+  echo "[entrypoint] SKIP_STARTUP_MIGRATIONS=1 -> pulando migrate"
+  should_run_migrations=0
+fi
+
+if [ "$should_run_migrations" = "1" ]; then
+  run_migrations || exit 1
+  # Cria sentinel somente se /data for gravável (evita criar dentro da imagem somente leitura)
+  if [ -w /data ]; then
+    touch "$MIGRATION_SENTINEL_FILE" || echo "[entrypoint] Aviso: não consegui criar sentinel em /data" >&2
+  fi
+fi
+
+# Coleta de estáticos (fallback):
+# Em teoria coletamos durante o build. Porém, se a pasta STATIC_ROOT não existir ou estiver vazia
+# (ex.: build sem collectstatic ou reconstrução parcial), rodamos collectstatic no runtime
+# uma única vez para evitar 404/MIME incorreto nos assets.
+if [ -n "$STATIC_ROOT" ]; then
+  if [ ! -d "$STATIC_ROOT" ] || [ -z "$(ls -A "$STATIC_ROOT" 2>/dev/null)" ]; then
+    echo "[entrypoint] STATIC_ROOT vazio/ausente em '$STATIC_ROOT' -> executando collectstatic"
+    python manage.py collectstatic --noinput || echo "[entrypoint] Aviso: collectstatic falhou (prosseguindo)"
+  else
+    echo "[entrypoint] STATIC_ROOT já populado em '$STATIC_ROOT'"
+  fi
+else
+  echo "[entrypoint] STATIC_ROOT não definido; pulando collectstatic de fallback"
+fi
 
 # Criar superuser se variáveis presentes
 python manage.py shell <<'PYCODE' || true
@@ -148,7 +180,8 @@ except Exception as exc:  # noqa: BLE001
 PYCODE
 
 if [ "${USE_GUNICORN}" = "1" ]; then
-  : "${GUNICORN_WORKERS:=3}"
+  # Em ambientes de pouca memória (ex: Fly shared-cpu-1x 256MB) usar 1 worker por padrão
+  : "${GUNICORN_WORKERS:=1}"
   : "${GUNICORN_TIMEOUT:=90}"
   echo "[entrypoint] Iniciando Gunicorn (workers=${GUNICORN_WORKERS} timeout=${GUNICORN_TIMEOUT})"
   exec gunicorn pandora_erp.asgi:application \

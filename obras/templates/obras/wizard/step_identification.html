@@ -20,7 +20,7 @@
   <div class="row g-2">
     {% include 'core/wizard/wizard_field.html' with field=form.nome field_size='lg' %}
     {% include 'core/wizard/wizard_field.html' with field=form.tipo_obra field_size='sm' %}
-    {% include 'core/wizard/wizard_field.html' with field=form.cno field_size='sm' %}
+    {% include 'core/wizard/wizard_field.html' with field=form.cno field_size='sm' hide_help_text=True %}
   </div>
 </div>
 
@@ -30,7 +30,7 @@
     Cliente (opcional)
   </h5>
   <div class="row g-2">
-    {% include 'core/wizard/wizard_field.html' with field=form.cliente field_size='lg' %}
+    {% include 'core/wizard/wizard_field.html' with field=form.cliente field_size='lg' hide_help_text=True %}
   </div>
 </div>
 

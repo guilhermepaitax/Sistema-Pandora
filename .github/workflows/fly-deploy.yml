@@ -1,23 +1,76 @@
 # See https://fly.io/docs/app-guides/continuous-deployment-with-github-actions/
 
+# yaml-language-server: $schema=https://json.schemastore.org/github-workflow.json
 name: Fly Deploy
+
 on:
   push:
-    branches:
-      - main
+    branches: [main]
+  workflow_dispatch:
+
+# Notas:
+# - Avisos de "Context access might be invalid" em editores acontecem porque o language server
+#   não conhece secrets definidos só em runtime (secrets.FLY_API_TOKEN, secrets.FLY_APP_HOST).
+# - Este arquivo segue o schema oficial; o comentário acima ajuda a silenciar avisos espúrios.
+
 jobs:
   deploy:
     name: Deploy app
     runs-on: ubuntu-latest
     permissions:
       contents: read
-    concurrency: deploy-group
+    concurrency:
+      group: fly-deploy-main
+      cancel-in-progress: true
+    env:
+      FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Set up Python (lint quick sanity)
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+      - name: Install minimal deps for lint
+        run: |
+          python -m pip install --upgrade pip
+          pip install mypy
+      - name: Type check key packages
+        run: mypy core shared user_management || true
+
       - name: Setup Flyctl
         uses: superfly/flyctl-actions/setup-flyctl@v1
-      - name: Deploy to Fly.io
-        run: flyctl deploy --remote-only
+      - name: Deploy to Fly.io (remote build)
+        run: flyctl deploy --remote-only --strategy immediate --wait-timeout 600
+      - name: Run Django migrations (SSH)
+        run: |
+          # Executa migrações diretamente na VM (idempotente)
+          flyctl ssh console -a sistema-pandora -C "bash -lc 'python manage.py migrate --noinput'"
+      - name: Obter status das máquinas (JSON)
+        id: fetch_status
+        run: |
+          echo "Buscando status em JSON..."
+          flyctl status --app sistema-pandora --json > status.json || true
+          if [ ! -s status.json ]; then echo '{}' > status.json; fi
+          # Normaliza em linha única para output
+          compact=$(tr '\n' ' ' < status.json)
+          echo "raw_json=$compact" >> "$GITHUB_OUTPUT"
+      - name: Validar estado das máquinas
+        run: |
+          echo "$FLY_STATUS_RAW" > status_raw.json
+          # Lista estados
+          states=$(echo "$FLY_STATUS_RAW" | jq -r '.Machines[]?.State' 2>/dev/null || echo '')
+          if [ -z "$states" ]; then
+            echo '[erro] Nenhuma máquina retornada no status'; exit 1; fi
+          bad=$(echo "$states" | grep -v '^started$' || true)
+          if [ -n "$bad" ]; then
+            echo '[erro] Máquinas não iniciadas:'
+            echo "$FLY_STATUS_RAW" | jq -r '.Machines[] | select(.State!="started") | " - id=" + (.ID // "?") + " state=" + (.State // "?")'
+            exit 1
+          fi
+          echo "Todas as máquinas estão 'started'."
         env:
-          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+          FLY_STATUS_RAW: ${{ steps.fetch_status.outputs.raw_json }}
+      # Healthcheck por host removido: validação agora depende só do status JSON das máquinas.

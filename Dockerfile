@@ -1,16 +1,16 @@
 ARG PYTHON_VERSION=3.13-slim
-
-FROM python:${PYTHON_VERSION}
+FROM python:${PYTHON_VERSION} AS builder
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
+    PYTHONUNBUFFERED=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
 
-# Dependências de build e runtime para psycopg2, Cairo/Pango, WeasyPrint, lxml
+# Dependências de build (compilar wheels) + libs necessárias para compilações
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
-    libpq-dev \
     gcc \
     pkg-config \
+    libpq-dev \
     libcairo2-dev \
     libpango-1.0-0 \
     libpangoft2-1.0-0 \
@@ -27,23 +27,50 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libfribidi0 \
     && rm -rf /var/lib/apt/lists/*
 
-# Diretório de trabalho consistente com o entrypoint
 WORKDIR /app
-
-# Instala dependências via pip
 COPY requirements.txt /app/
-RUN pip install --upgrade pip && pip install -r requirements.txt
+RUN pip install --upgrade pip && pip wheel --no-cache-dir --wheel-dir /wheels -r requirements.txt
 
 COPY . /app
-# Garante diretório de dados para SQLite mesmo se volume não montar
-RUN mkdir -p /data && chmod 777 /data
-
-# Coleta estáticos em build; define STATIC_ROOT para dentro da imagem
+# collectstatic durante build (usa dependências do builder)
 ENV STATIC_ROOT=/app/staticfiles_collected
 RUN python manage.py collectstatic --noinput || echo "[docker] collectstatic falhou (ok em dev)"
 
-# Porta padrão usada pelo entrypoint/fly.toml
-EXPOSE 8080
+# ---------------- RUNTIME IMAGE ----------------
+FROM python:${PYTHON_VERSION} AS runtime
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    STATIC_ROOT=/app/staticfiles_collected
 
-# Usa o entrypoint do repositório (migrações + daphne/gunicorn)
+# Apenas libs runtime necessárias (sem toolchain pesada)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libpq5 \
+    libcairo2 \
+    libpango-1.0-0 \
+    libpangoft2-1.0-0 \
+    libpangocairo-1.0-0 \
+    libgdk-pixbuf-2.0-0 \
+    shared-mime-info \
+    libxml2 \
+    libxslt1.1 \
+    libjpeg62-turbo \
+    zlib1g \
+    libfreetype6 \
+    libharfbuzz0b \
+    libfribidi0 \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Copia wheels e instala (sem cache)
+COPY --from=builder /wheels /wheels
+RUN pip install --no-cache-dir /wheels/*
+
+# Copia código e estáticos coletados do builder
+COPY --from=builder /app /app
+
+# Garante diretório de dados para SQLite se volume não montar
+RUN mkdir -p /data && chmod 777 /data
+
+EXPOSE 8080
 ENTRYPOINT ["/bin/bash", "/app/entrypoint.sh"]

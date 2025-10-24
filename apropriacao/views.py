@@ -8,6 +8,7 @@ from django.urls import reverse_lazy
 from django.utils.translation import gettext_lazy as _
 from django.views.generic import CreateView, DeleteView, DetailView, ListView, UpdateView
 
+from core.mixins import ModuleRequiredMixin
 from core.utils import get_current_tenant
 
 from .forms import ApropriacaoForm
@@ -16,9 +17,7 @@ from .models import Apropriacao
 
 @login_required
 def apropriacao_home(request):
-    """
-    View para o dashboard de Apropriação, mostrando estatísticas e dados relevantes.
-    """
+    """View para o dashboard de Apropriação, mostrando estatísticas e dados relevantes."""
     template_name = "apropriacao/apropriacao_home.html"
     tenant = get_current_tenant(request)
 
@@ -35,7 +34,13 @@ def apropriacao_home(request):
     return render(request, template_name, context)
 
 
-class ApropriacaoListView(ListView):
+class ApropriacaoMixin(ModuleRequiredMixin):
+    """Mixin base para views de apropriação."""
+
+    required_module = "apropriacao"
+
+
+class ApropriacaoListView(ApropriacaoMixin, ListView):
     model = Apropriacao
     template_name = "apropriacao/apropriacao_list_ultra_modern.html"
     context_object_name = "apropriacao_list"
@@ -51,7 +56,7 @@ class ApropriacaoListView(ListView):
                 Q(descricao__icontains=search)
                 | Q(obra__nome__icontains=search)
                 | Q(responsavel__nome__icontains=search)
-                | Q(observacoes__icontains=search)
+                | Q(observacoes__icontains=search),
             )
 
         return queryset.order_by("-data")
@@ -67,7 +72,7 @@ class ApropriacaoListView(ListView):
         return context
 
 
-class ApropriacaoDetailView(DetailView):
+class ApropriacaoDetailView(ApropriacaoMixin, DetailView):
     model = Apropriacao
     template_name = "apropriacao/apropriacao_detail_ultra_modern.html"
     context_object_name = "apropriacao"
@@ -76,7 +81,7 @@ class ApropriacaoDetailView(DetailView):
         return Apropriacao.objects.select_related("obra", "responsavel").all()
 
 
-class ApropriacaoCreateView(CreateView):
+class ApropriacaoCreateView(ApropriacaoMixin, CreateView):
     model = Apropriacao
     form_class = ApropriacaoForm
     template_name = "apropriacao/apropriacao_form_ultra_modern.html"
@@ -93,7 +98,7 @@ class ApropriacaoCreateView(CreateView):
         return super().form_valid(form)
 
 
-class ApropriacaoUpdateView(UpdateView):
+class ApropriacaoUpdateView(ApropriacaoMixin, UpdateView):
     model = Apropriacao
     form_class = ApropriacaoForm
     template_name = "apropriacao/apropriacao_form_ultra_modern.html"
@@ -110,7 +115,7 @@ class ApropriacaoUpdateView(UpdateView):
         return super().form_valid(form)
 
 
-class ApropriacaoDeleteView(DeleteView):
+class ApropriacaoDeleteView(ApropriacaoMixin, DeleteView):
     model = Apropriacao
     template_name = "apropriacao/apropriacao_confirm_delete_ultra_modern.html"
     success_url = reverse_lazy("apropriacao:apropriacao_list")

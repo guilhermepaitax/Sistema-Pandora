@@ -1,4 +1,13 @@
+"""Sinais de autenticação, perfil e auditoria (versão baseline).
+
+Mantém exatamente o comportamento original em produção. Alterações aqui serão
+apenas cosméticas/documentais para facilitar análise estática sem afetar
+regras de negócio.
+"""
+
 import contextlib
+import logging
+from typing import Any
 
 from django.conf import settings
 from django.contrib.auth import get_user_model
@@ -17,14 +26,27 @@ from .realtime import broadcast_session_event
 
 try:  # Import condicional para evitar falhas em migrações iniciais
     from core.models import TenantUser
-except Exception:  # pragma: no cover
-    TenantUser = None  # type: ignore
+except Exception:  # pragma: no cover  # noqa: BLE001
+    TenantUser = None  # type: ignore[assignment]
 
 User = get_user_model()
 
+# Import opcional para evitar E402/ciclos; usado apenas quando disponível
+try:  # pragma: no cover
+    from core.utils import get_current_tenant as _get_current_tenant
+except Exception:  # noqa: BLE001
+    _get_current_tenant = None
+
+logger = logging.getLogger(__name__)
+
 
 @receiver(post_save, sender=User)
-def perfil_estendido_handler(sender, instance, created, **kwargs):
+def perfil_estendido_handler(
+    sender: Any,
+    instance: Any,
+    created: bool,
+    **kwargs: Any,
+) -> None:
     """Handler unificado idempotente para criação e sincronização de perfil."""
     if created:
         ensure_profile(instance)
@@ -32,7 +54,11 @@ def perfil_estendido_handler(sender, instance, created, **kwargs):
 
 
 @receiver(post_save, sender=PerfilUsuarioEstendido)
-def perfil_reverse_sync_user_active(sender, instance, **kwargs):  # pragma: no cover - simples
+def perfil_reverse_sync_user_active(
+    sender: Any,
+    instance: Any,
+    **kwargs: Any,
+):  # pragma: no cover - simples
     """Sincroniza user.is_active a partir do status do perfil.
     Regras:
       - status INATIVO / BLOQUEADO / SUSPENSO => user.is_active=False
@@ -63,9 +89,8 @@ def perfil_reverse_sync_user_active(sender, instance, **kwargs):  # pragma: no c
 
 
 @receiver(user_logged_in)
-def usuario_logou(sender, request, user, **kwargs):
+def usuario_logou(sender: Any, request: Any, user: Any, **kwargs: Any) -> None:
     """Registrar login do usuário"""
-
     # Obter informações da requisição
     ip_address = request.META.get("REMOTE_ADDR", "127.0.0.1")  # IP padrão se não encontrado
     user_agent = request.META.get("HTTP_USER_AGENT", "Unknown")
@@ -132,7 +157,7 @@ def usuario_logou(sender, request, user, **kwargs):
                                 tenant = Tenant.objects.get(id=tid)
                             except Tenant.DoesNotExist:
                                 tenant = None
-                except Exception:
+                except Exception:  # noqa: BLE001
                     tenant = None
             if tenant is not None:
                 # Lista mínima padrão para não interferir com testes sensíveis (ex.: VIEW_COTACAO)
@@ -141,14 +166,14 @@ def usuario_logou(sender, request, user, **kwargs):
                     try:
                         # resolve() já popula o cache com TTL padrão
                         permission_resolver.resolve(user, tenant, act)
-                    except Exception:
+                    except Exception:  # noqa: BLE001
                         pass
-    except Exception:
+    except Exception:  # noqa: BLE001
         # Nunca impacta o fluxo de login
         pass
 
     @receiver(user_logged_out)
-    def usuario_deslogou(sender, request, user, **kwargs):
+    def usuario_deslogou(sender: Any, request: Any, user: Any, **kwargs: Any) -> None:
         """Registrar logout do usuário"""
         ip_address = request.META.get("REMOTE_ADDR", "")
         user_agent = request.META.get("HTTP_USER_AGENT", "")
@@ -169,14 +194,23 @@ def usuario_logou(sender, request, user, **kwargs):
 
         # Log da atividade
         log_activity(
-            user, "LOGOUT", "user_management", "Usuário fez logout do sistema", ip=ip_address, user_agent=user_agent
+            user,
+            "LOGOUT",
+            "user_management",
+            "Usuário fez logout do sistema",
+            ip=ip_address,
+            user_agent=user_agent,
         )
 
 
 @receiver(user_login_failed)
-def login_falhado(sender, credentials, request, **kwargs):
+def login_falhado(
+    sender: Any,
+    credentials: dict[str, Any],
+    request: Any | None,
+    **kwargs: Any,
+) -> None:
     """Registrar tentativas de login falhadas"""
-
     username = credentials.get("username", "")
     # Em chamadas authenticate() sem request (testes ou fluxos internos) request pode ser None
     if request is not None:
@@ -226,15 +260,14 @@ def login_falhado(sender, credentials, request, **kwargs):
                 ip=ip_address,
                 user_agent=user_agent,
             )
-        except Exception as e:  # pragma: no cover - fallback
+        except Exception as e:  # pragma: no cover - fallback  # noqa: BLE001
             print(
-                f"Erro ao registrar tentativa de login com usuário inexistente: {username} - IP: {ip_address} - Erro: {e}"
+                f"Erro ao registrar tentativa de login com usuário inexistente: {username} - IP: {ip_address} - Erro: {e}",
             )
 
 
-def limpar_sessoes_expiradas():
+def limpar_sessoes_expiradas() -> None:
     """Função para limpar sessões expiradas (pode ser chamada por um cron job)"""
-
     # Obter todas as sessões ativas do Django
     sessoes_django = Session.objects.filter(expire_date__lt=timezone.now())
     session_keys_expiradas = list(sessoes_django.values_list("session_key", flat=True))
@@ -246,9 +279,8 @@ def limpar_sessoes_expiradas():
     sessoes_django.delete()
 
 
-def limpar_logs_antigos(dias=90):
+def limpar_logs_antigos(dias: int = 90) -> int:
     """Função para limpar logs antigos (pode ser chamada por um cron job)"""
-
     data_limite = timezone.now() - timezone.timedelta(days=dias)
     logs_removidos = LogAtividadeUsuario.objects.filter(timestamp__lt=data_limite).count()
     LogAtividadeUsuario.objects.filter(timestamp__lt=data_limite).delete()
@@ -256,9 +288,8 @@ def limpar_logs_antigos(dias=90):
     return logs_removidos
 
 
-def desbloquear_usuarios():
+def desbloquear_usuarios() -> int:
     """Função para desbloquear usuários automaticamente (pode ser chamada por um cron job)"""
-
     agora = timezone.now()
     perfis_bloqueados = PerfilUsuarioEstendido.objects.filter(status=StatusUsuario.BLOQUEADO, bloqueado_ate__lt=agora)
 
@@ -274,7 +305,11 @@ def desbloquear_usuarios():
 if TenantUser:  # pragma: no branch - simples
 
     @receiver(post_save, sender=TenantUser)
-    def invalidate_perm_cache_tenantuser(sender, instance, **kwargs):  # pragma: no cover (efeito indireto)
+    def invalidate_perm_cache_tenantuser(
+        sender: Any,
+        instance: Any,
+        **kwargs: Any,
+    ) -> None:  # pragma: no cover (efeito indireto)
         with contextlib.suppress(Exception):
             permission_resolver.invalidate_cache(user_id=instance.user_id, tenant_id=instance.tenant_id)
 
@@ -286,17 +321,28 @@ try:
     from user_management.models import PermissaoPersonalizada
 
     @receiver(post_save, sender=PermissaoPersonalizada)
-    def invalida_cache_perm_save(sender, instance, **kwargs):  # pragma: no cover - efeito colateral simples
+    def invalida_cache_perm_save(
+        sender: Any,
+        instance: Any,
+        **kwargs: Any,
+    ) -> None:  # pragma: no cover - efeito colateral simples
         with contextlib.suppress(Exception):
             permission_resolver.invalidate_cache(
-                user_id=instance.user_id, tenant_id=getattr(instance.scope_tenant, "id", None)
+                user_id=instance.user_id,
+                tenant_id=getattr(instance.scope_tenant, "id", None),
             )
 
     @receiver(post_delete, sender=PermissaoPersonalizada)
-    def invalida_cache_perm_delete(sender, instance, **kwargs):  # pragma: no cover
+    def invalida_cache_perm_delete(
+        sender: Any,
+        instance: Any,
+        **kwargs: Any,
+    ) -> None:  # pragma: no cover
         with contextlib.suppress(Exception):
             permission_resolver.invalidate_cache(
-                user_id=instance.user_id, tenant_id=getattr(instance.scope_tenant, "id", None)
+                user_id=instance.user_id,
+                tenant_id=getattr(instance.scope_tenant, "id", None),
             )
-except Exception:
+
+except Exception:  # noqa: BLE001
     pass

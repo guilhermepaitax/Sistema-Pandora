@@ -49,6 +49,7 @@ Observação: finalização cobre admins na mesma transação — risco de órf�
 Somente superusuários (`is_superuser=True`). Enforce via `test_func` na view.
 Endpoints auxiliares (AJAX e navegação): restritos a superusuários autenticados e devolvem `X-Wizard-Correlation-Id`.
 Rotas: `check_subdomain`, `wizard_goto_step`, `wizard_validate_field`.
+Compatibilidade: `tenant_module_config` (legacy) redireciona para `wizard_goto_step_edit` com `step=5`.
 
 ## 4. Fluxo de Steps
 1. Identificação (PJ/PF)
@@ -129,6 +130,11 @@ Pipeline:
 2. Remove duplicatas preservando primeira ocorrência.
 3. Ordena (previsibilidade de logs).
 4. Ajusta coerência com `portal_ativo`.
+
+Observações do Step 5:
+- O front envia checkboxes com `name="enabled_modules"` sem prefixo; inputs `disabled` não são enviados pelo navegador.
+- O wizard agrega os valores do POST em `step_5.main.enabled_modules`, normalizando aliases.
+- Se "Selecionar todos" marcar todos, a contagem deve refletir a lista de choices disponíveis; logs de auditoria imprimem contagem e amostras para facilitar verificação.
 
 ## 11. Administradores (Step 6)
 Fonte: `admins_json` ou campos legados.

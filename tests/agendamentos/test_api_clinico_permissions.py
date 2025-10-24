@@ -40,7 +40,9 @@ def _criar_slot(tenant, profissional):
 
 @pytest.mark.django_db
 def test_staff_pode_reservar_clinico(client):
-    tenant = Tenant.objects.create(nome="T", slug="t")
+    tenant = Tenant.objects.create(
+        nome="T", slug="t", enabled_modules={"modules": ["agendamentos", "servicos", "clientes"]}
+    )
     cat = CategoriaServico.objects.create(nome="Cat", slug="cat")
     serv = Servico.objects.create(
         tenant=tenant,
@@ -70,7 +72,11 @@ def test_staff_pode_reservar_clinico(client):
 
 @pytest.mark.django_db
 def test_cliente_portal_pode_reservar_clinico_online(client):
-    tenant = Tenant.objects.create(nome="T2", slug="t2")
+    tenant = Tenant.objects.create(
+        nome="T2",
+        slug="t2",
+        enabled_modules={"modules": ["agendamentos", "servicos", "clientes"]},
+    )
     cat = CategoriaServico.objects.create(nome="Cat2", slug="cat2")
     serv = Servico.objects.create(
         tenant=tenant,
@@ -108,7 +114,11 @@ def test_cliente_portal_pode_reservar_clinico_online(client):
 
 @pytest.mark.django_db
 def test_cliente_portal_negado_servico_clinico_offline(client):
-    tenant = Tenant.objects.create(nome="T3", slug="t3")
+    tenant = Tenant.objects.create(
+        nome="T3",
+        slug="t3",
+        enabled_modules={"modules": ["agendamentos", "servicos", "clientes"]},
+    )
     cat = CategoriaServico.objects.create(nome="Cat3", slug="cat3")
     serv = Servico.objects.create(
         tenant=tenant,
@@ -147,7 +157,11 @@ def test_cliente_portal_negado_servico_clinico_offline(client):
 
 @pytest.mark.django_db
 def test_staff_negado_servico_clinico_inativo(client):
-    tenant = Tenant.objects.create(nome="T4", slug="t4")
+    tenant = Tenant.objects.create(
+        nome="T4",
+        slug="t4",
+        enabled_modules={"modules": ["agendamentos", "servicos", "clientes"]},
+    )
     cat = CategoriaServico.objects.create(nome="Cat4", slug="cat4")
     serv = Servico.objects.create(
         tenant=tenant,

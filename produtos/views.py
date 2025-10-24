@@ -20,7 +20,7 @@ from django.utils.translation import gettext_lazy as _
 from django.views.generic import CreateView, DeleteView, DetailView, ListView, UpdateView
 
 # Importações do sistema
-from core.mixins import TenantRequiredMixin
+from core.mixins import ModuleRequiredMixin, TenantRequiredMixin
 from core.utils import get_current_tenant
 from shared.mixins.ui_permissions import UIPermissionsMixin
 from shared.services.ui_permissions import build_ui_permissions
@@ -38,8 +38,10 @@ from .models import Categoria, Produto, ProdutoImagem
 from .utils import generate_next_codigo
 
 
-class ProdutoMixin(TenantRequiredMixin):
+class ProdutoMixin(TenantRequiredMixin, ModuleRequiredMixin):
     """Mixin base para views de produtos com funcionalidades compartilhadas"""
+
+    required_module = "produtos"
 
     def get_tenant_filtered_queryset(self, model_class):
         """Retorna queryset filtrado por tenant"""
@@ -186,7 +188,7 @@ class ProdutoListView(UIPermissionsMixin, ProdutoMixin, ListView):
                 Q(nome__icontains=busca)
                 | Q(codigo__icontains=busca)
                 | Q(codigo_barras__icontains=busca)
-                | Q(descricao__icontains=busca)
+                | Q(descricao__icontains=busca),
             )
 
         # Filtro por categoria
@@ -355,7 +357,7 @@ class ProdutoDetailView(UIPermissionsMixin, ProdutoMixin, DetailView):
 
         # Produtos relacionados (mesma categoria)
         context["produtos_relacionados"] = Produto.objects.filter(categoria=self.object.categoria, ativo=True).exclude(
-            pk=self.object.pk
+            pk=self.object.pk,
         )[:6]
 
         # Breadcrumbs
@@ -380,7 +382,12 @@ class ProdutoCreateView(UIPermissionsMixin, ProdutoMixin, CreateView):
 
     # Formset para múltiplas imagens
     ImagemFormSet = inlineformset_factory(
-        Produto, ProdutoImagem, form=ProdutoImagemForm, fields=("imagem", "titulo", "ordem"), extra=3, can_delete=True
+        Produto,
+        ProdutoImagem,
+        form=ProdutoImagemForm,
+        fields=("imagem", "titulo", "ordem"),
+        extra=3,
+        can_delete=True,
     )
 
     def get_context_data(self, **kwargs):
@@ -655,7 +662,7 @@ def produto_toggle_ativo(request, pk):
                 "success": True,
                 "ativo": produto.ativo,
                 "message": f"Produto {'ativado' if produto.ativo else 'desativado'} com sucesso!",
-            }
+            },
         )
 
     return JsonResponse({"success": False, "message": "Método não permitido"})
@@ -674,7 +681,7 @@ def produto_toggle_destaque(request, pk):
                 "success": True,
                 "destaque": produto.destaque,
                 "message": f"Produto {'adicionado aos' if produto.destaque else 'removido dos'} destaques!",
-            }
+            },
         )
 
     return JsonResponse({"success": False, "message": "Método não permitido"})
@@ -686,7 +693,7 @@ def produtos_search_ajax(request):
     term = request.GET.get("term", "")
 
     produtos = Produto.objects.filter(
-        Q(nome__icontains=term) | Q(codigo__icontains=term) | Q(codigo_barras__icontains=term)
+        Q(nome__icontains=term) | Q(codigo__icontains=term) | Q(codigo_barras__icontains=term),
     ).filter(ativo=True)[:10]
 
     results = []
@@ -699,7 +706,7 @@ def produtos_search_ajax(request):
                 "codigo": produto.codigo or "",
                 "preco": float(produto.preco_unitario),
                 "estoque": produto.estoque_atual,
-            }
+            },
         )
 
     return JsonResponse(results, safe=False)
@@ -724,7 +731,7 @@ def produto_export_csv(request):
             "Estoque Mínimo",
             "Estoque Máximo",
             "Ativo",
-        ]
+        ],
     )
 
     produtos = Produto.objects.select_related("categoria").all()
@@ -740,7 +747,7 @@ def produto_export_csv(request):
                 produto.estoque_minimo,
                 produto.estoque_maximo,
                 "Sim" if produto.ativo else "Não",
-            ]
+            ],
         )
 
     return response
@@ -764,7 +771,7 @@ def produto_export_excel(request):
                 "Estoque Mínimo": produto.estoque_minimo,
                 "Estoque Máximo": produto.estoque_maximo,
                 "Ativo": "Sim" if produto.ativo else "Não",
-            }
+            },
         )
 
     df = pd.DataFrame(data)
@@ -798,7 +805,8 @@ def produto_import(request):
                         categoria_nome = row.get("Categoria", "").strip()
                         if categoria_nome:
                             categoria, created = Categoria.objects.get_or_create(
-                                nome=categoria_nome, defaults={"descricao": f"Categoria importada: {categoria_nome}"}
+                                nome=categoria_nome,
+                                defaults={"descricao": f"Categoria importada: {categoria_nome}"},
                             )
                         else:
                             categoria = None
@@ -818,7 +826,7 @@ def produto_import(request):
                         importados += 1
 
                     except Exception as e:
-                        erros.append(f"Linha {index + 2}: {str(e)}")
+                        erros.append(f"Linha {index + 2}: {e!s}")
 
                 if importados > 0:
                     messages.success(request, f"{importados} produtos importados com sucesso!")
@@ -828,7 +836,7 @@ def produto_import(request):
                         messages.warning(request, erro)
 
             except Exception as e:
-                messages.error(request, f"Erro ao processar arquivo: {str(e)}")
+                messages.error(request, f"Erro ao processar arquivo: {e!s}")
     else:
         form = ProdutoImportForm()
 

@@ -1,11 +1,25 @@
-# obras/views.py
+"""Views do módulo de obras.
+
+Este módulo contém as views para gerenciamento de obras, incluindo:
+- ObrasMixin: Mixin base com filtros de tenant e módulo
+- Dashboard de obras (obras_home)
+- CRUD de obras via Class-Based Views (List, Detail, Delete)
+- Gerenciamento de unidades e documentos
+- Geração em massa de unidades
+- Views legadas para compatibilidade
+
+Nota: A criação e edição de obras é realizada exclusivamente via
+wizard_views.py e wizard_forms.py.
+"""
+
 from datetime import timedelta
 
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
 from django.contrib.auth.mixins import LoginRequiredMixin
-from django.db.models import Q, Sum
-from django.http import JsonResponse
+from django.db import transaction
+from django.db.models import Q, QuerySet, Sum
+from django.http import HttpRequest, HttpResponse, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 from django.utils import timezone
@@ -13,38 +27,43 @@ from django.utils.translation import gettext_lazy as _
 from django.views.generic import DeleteView, DetailView, ListView
 from django_tables2 import RequestConfig
 
-from core.mixins import TenantRequiredMixin
+from core.mixins import ModuleRequiredMixin, TenantRequiredMixin
 from core.utils import get_current_tenant
 from shared.mixins.ui_permissions import UIPermissionsMixin
 from shared.services.ui_permissions import build_ui_permissions
 
 from .forms import DocumentoObraForm, GerarUnidadesEmMassaForm, ModeloUnidadeForm, UnidadeForm
-from .models import DocumentoObra, ModeloUnidade, Obra, Unidade
+from .models import DocumentoObra, Obra, Unidade
 from .tables import ObraTable
 
 
-class ObrasMixin(LoginRequiredMixin, TenantRequiredMixin):
-    """Mixin base para views de obras"""
+class ObrasMixin(LoginRequiredMixin, TenantRequiredMixin, ModuleRequiredMixin):
+    """Mixin base para views de obras."""
 
     model = Obra
+    required_module = "obras"
 
-    def get_queryset(self):
-        """Filtra obras por tenant se aplicável"""
+    def get_queryset(self) -> QuerySet[Obra]:
+        """Filtra obras por tenant se aplicável."""
         queryset = super().get_queryset()
         tenant = get_current_tenant(self.request)
         if tenant and hasattr(self.model, "tenant"):
             queryset = queryset.filter(tenant=tenant)
         return queryset
 
-    def get_context_data(self, **kwargs):
+    def get_context_data(
+        self,
+        **kwargs: object,
+    ) -> dict[str, object]:  # pyright: ignore[reportIncompatibleMethodOverride]
+        """Adiciona tenant ao contexto."""
         context = super().get_context_data(**kwargs)
         context["tenant"] = get_current_tenant(self.request)
         return context
 
 
 @login_required
-def obras_home(request):
-    """Dashboard principal do módulo obras"""
+def obras_home(request: HttpRequest) -> HttpResponse:
+    """Dashboard principal do módulo obras."""
     tenant = get_current_tenant(request)
 
     if not tenant:
@@ -83,7 +102,12 @@ def obras_home(request):
     # Top obras por valor
     top_obras_valor = obras_qs.order_by("-valor_contrato")[:5] if hasattr(Obra, "valor_contrato") else []
 
-    ui_perms = build_ui_permissions(request.user, tenant, app_label="obras", model_name="obra")
+    ui_perms = build_ui_permissions(
+        request.user,  # pyright: ignore[reportArgumentType]
+        tenant,
+        app_label="obras",
+        model_name="obra",
+    )
 
     context = {
         "titulo": "Dashboard - Obras",
@@ -109,7 +133,7 @@ def obras_home(request):
 
 
 class ObraListView(UIPermissionsMixin, ObrasMixin, ListView):
-    """View para listagem de obras"""
+    """View para listagem de obras."""
 
     template_name = "obras/obras_list.html"
     context_object_name = "obras"
@@ -117,13 +141,20 @@ class ObraListView(UIPermissionsMixin, ObrasMixin, ListView):
     app_label = "obras"
     model_name = "obra"
 
-    def get_context_data(self, **kwargs):
+    def get_context_data(
+        self,
+        **kwargs: object,
+    ) -> dict[str, object]:  # pyright: ignore[reportIncompatibleMethodOverride]
+        """Adiciona tabela e estatísticas ao contexto."""
         context = super().get_context_data(**kwargs)
         obras = self.get_queryset()
 
         # Configurar tabela
         table = ObraTable(obras)
-        RequestConfig(self.request, paginate={"per_page": self.paginate_by}).configure(table)
+        RequestConfig(
+            self.request,
+            paginate={"per_page": self.paginate_by},  # pyright: ignore[reportArgumentType]
+        ).configure(table)
 
         # Estatísticas para cards
         thirty_days_ago = timezone.now() - timedelta(days=30)
@@ -137,28 +168,32 @@ class ObraListView(UIPermissionsMixin, ObrasMixin, ListView):
                 "module": "obras",
                 # Estatísticas
                 "total_count": obras.count(),
-                "active_count": obras.filter(status="em_andamento").count()
-                if hasattr(Obra, "status")
-                else obras.count(),
+                "active_count": (
+                    obras.filter(status="em_andamento").count() if hasattr(Obra, "status") else obras.count()
+                ),
                 "inactive_count": obras.filter(status="pausada").count() if hasattr(Obra, "status") else 0,
-                "recent_count": obras.filter(data_inicio__gte=thirty_days_ago).count()
-                if hasattr(Obra, "data_inicio")
-                else 0,
-            }
+                "recent_count": (
+                    obras.filter(data_inicio__gte=thirty_days_ago).count() if hasattr(Obra, "data_inicio") else 0
+                ),
+            },
         )
 
         return context
 
 
 class ObraDetailView(UIPermissionsMixin, ObrasMixin, DetailView):
-    """View para detalhes da obra"""
+    """View para detalhes da obra."""
 
     template_name = "obras/obras_detail.html"
     context_object_name = "obra"
     app_label = "obras"
     model_name = "obra"
 
-    def get_context_data(self, **kwargs):
+    def get_context_data(
+        self,
+        **kwargs: object,
+    ) -> dict[str, object]:  # pyright: ignore[reportIncompatibleMethodOverride]
+        """Adiciona unidades, documentos e formulários ao contexto."""
         context = super().get_context_data(**kwargs)
         obra = self.object
 
@@ -178,13 +213,18 @@ class ObraDetailView(UIPermissionsMixin, ObrasMixin, DetailView):
                 "documentos": documentos,
                 "unidade_form": unidade_form,
                 "documento_form": documento_form,
-            }
+            },
         )
 
         return context
 
-    def post(self, request, *args, **kwargs):
-        """Processar formulários de documentos"""
+    def post(
+        self,
+        request: HttpRequest,
+        *args: object,
+        **kwargs: object,
+    ) -> HttpResponse:  # pyright: ignore[reportIncompatibleMethodOverride]
+        """Processar formulários de documentos."""
         self.object = self.get_object()
         obra = self.object
 
@@ -195,30 +235,36 @@ class ObraDetailView(UIPermissionsMixin, ObrasMixin, DetailView):
             documento.save()
             messages.success(request, f"Documento '{documento.descricao}' adicionado com sucesso!")
             return redirect("obras:obra_detail", pk=obra.pk)
-        else:
-            messages.error(request, "Erro ao adicionar o documento. Verifique os dados.")
-            return self.get(request, *args, **kwargs)
+        messages.error(request, "Erro ao adicionar o documento. Verifique os dados.")
+        return self.get(request, *args, **kwargs)
 
 
 class ObraDeleteView(UIPermissionsMixin, ObrasMixin, DeleteView):
-    """View para exclusão de obras"""
+    """View para exclusão de obras."""
 
     template_name = "obras/obras_confirm_delete.html"
     app_label = "obras"
     model_name = "obra"
 
-    def get_success_url(self):
+    def get_success_url(self) -> str:
+        """Retorna URL de redirecionamento após exclusão."""
         return reverse("obras:obras_list")
 
-    def delete(self, request, *args, **kwargs):
+    def delete(
+        self,
+        request: HttpRequest,
+        *args: object,
+        **kwargs: object,
+    ) -> HttpResponse:  # pyright: ignore[reportIncompatibleMethodOverride]
+        """Executa exclusão com mensagem de sucesso."""
         messages.success(request, "Obra excluída com sucesso!")
-        return super().delete(request, *args, **kwargs)
+        return super().delete(request, *args, **kwargs)  # pyright: ignore[reportArgumentType]
 
 
 # Views auxiliares para unidades e documentos
 @login_required
-def unidade_add(request, obra_pk):
-    """Adicionar unidade a uma obra"""
+def unidade_add(request: HttpRequest, obra_pk: int) -> HttpResponse:
+    """Adicionar unidade a uma obra."""
     obra = get_object_or_404(Obra, pk=obra_pk)
 
     if request.method == "POST":
@@ -235,8 +281,8 @@ def unidade_add(request, obra_pk):
 
 
 @login_required
-def unidade_delete(request, pk):
-    """Excluir uma unidade"""
+def unidade_delete(request: HttpRequest, pk: int) -> HttpResponse:
+    """Excluir uma unidade."""
     unidade = get_object_or_404(Unidade, pk=pk)
     obra_pk = unidade.obra.pk
 
@@ -248,8 +294,8 @@ def unidade_delete(request, pk):
 
 
 @login_required
-def documento_delete(request, pk):
-    """Excluir um documento"""
+def documento_delete(request: HttpRequest, pk: int) -> HttpResponse:
+    """Excluir um documento."""
     documento = get_object_or_404(DocumentoObra, pk=pk)
     obra_pk = documento.obra.pk
 
@@ -262,7 +308,8 @@ def documento_delete(request, pk):
 
 # Views para Modelos e geração em massa
 @login_required
-def modelo_unidade_create(request, obra_pk):
+def modelo_unidade_create(request: HttpRequest, obra_pk: int) -> HttpResponse:
+    """Criar novo modelo de unidade para uma obra."""
     obra = get_object_or_404(Obra, pk=obra_pk)
     if request.method == "POST":
         form = ModeloUnidadeForm(request.POST)
@@ -274,40 +321,17 @@ def modelo_unidade_create(request, obra_pk):
             return redirect("obras:obra_detail", pk=obra.pk)
     else:
         form = ModeloUnidadeForm(initial={"obra": obra})
-    # Sidebar genérica: preview + dicas + últimos
-    recent_qs = ModeloUnidade.objects.filter(obra=obra).order_by("-id")[:5]
-    recent_items = [{"name": m.nome, "created_at": getattr(m, "created_at", None)} for m in recent_qs]
-    preview = {
-        "title": "Prévia do Modelo",
-        "items": [
-            ("Nome", form["nome"].value() or "Nome do Modelo"),
-            ("Dormitórios", form["dormitorios"].value() or 0),
-            ("Suítes", form["suites"].value() or 0),
-            ("Banheiros", form["banheiros"].value() or 1),
-            ("Vagas", form["vagas"].value() or 0),
-            ("Área Priv.", form["area_privativa"].value() or ""),
-            ("Área Total", form["area_total"].value() or ""),
-        ],
-    }
-    form_tips = [
-        "Use códigos de modelo padronizados (01, 02...)",
-        "Preencha áreas privativa e total",
-        "Defina o tipo de unidade corretamente",
-    ]
+
     context = {
         "form": form,
         "obra": obra,
-        "recent_items": recent_items,
-        "recent_title": "Últimos Modelos",
-        "preview": preview,
-        "form_tips": form_tips,
-        "form_icon": "fas fa-layer-group",
     }
     return render(request, "obras/modelo_unidade_form.html", context)
 
 
 @login_required
-def gerar_unidades_em_massa(request, obra_pk):
+def gerar_unidades_em_massa(request: HttpRequest, obra_pk: int) -> HttpResponse:
+    """Gerar unidades em massa para uma obra."""
     obra = get_object_or_404(Obra, pk=obra_pk)
     if request.method == "POST":
         form = GerarUnidadesEmMassaForm(request.POST, obra=obra)
@@ -318,8 +342,6 @@ def gerar_unidades_em_massa(request, obra_pk):
             prefixo_numero = form.cleaned_data.get("prefixo_numero") or ""
             numeros = [n.strip() for n in form.cleaned_data["numeros_por_andar"].split(",") if n.strip()]
             modelo = form.cleaned_data["modelo"]
-
-            from django.db import transaction
 
             created = 0
             with transaction.atomic():
@@ -345,49 +367,18 @@ def gerar_unidades_em_massa(request, obra_pk):
             return redirect("obras:obra_detail", pk=obra.pk)
     else:
         form = GerarUnidadesEmMassaForm(obra=obra)
-    recent_qs = Unidade.objects.filter(obra=obra).order_by("-id")[:5]
-    recent_items = [{"name": u.identificador, "created_at": getattr(u, "created_at", None)} for u in recent_qs]
-    # Recupera nome do modelo, se houver valor
-    modelo_nome = "-"
-    try:
-        modelo_pk = form["modelo"].value()
-        if modelo_pk:
-            modelo_obj = ModeloUnidade.objects.filter(pk=modelo_pk).first()
-            if modelo_obj:
-                modelo_nome = modelo_obj.nome
-    except Exception:
-        pass
-    preview = {
-        "title": "Prévia da Geração",
-        "items": [
-            ("Bloco", form["bloco"].value() or "-"),
-            ("Andares", f"{form['andar_inicial'].value() or 1}-{form['andar_final'].value() or 1}"),
-            ("Padrão", f"{form['prefixo_numero'].value() or ''}{form['numeros_por_andar'].value() or ''}"),
-            ("Modelo", modelo_nome),
-        ],
-    }
-    form_tips = [
-        "Separe os números por vírgula: 01,02,03,04",
-        "Use bloco quando houver múltiplas torres",
-        "Confirme o intervalo de andares antes de gerar",
-    ]
+
     context = {
         "form": form,
         "obra": obra,
-        "recent_items": recent_items,
-        "recent_title": "Últimas Unidades",
-        "preview": preview,
-        "form_tips": form_tips,
-        "save_label": "Gerar",
-        "form_icon": "fas fa-clone",
     }
     return render(request, "obras/gerar_unidades_form.html", context)
 
 
 # Views AJAX para funcionalidades adicionais
 @login_required
-def obra_search_ajax(request):
-    """Busca AJAX para obras"""
+def obra_search_ajax(request: HttpRequest) -> JsonResponse:
+    """Busca AJAX para obras."""
     term = request.GET.get("term", "")
     tenant = get_current_tenant(request)
 
@@ -398,40 +389,39 @@ def obra_search_ajax(request):
     if term:
         obras_qs = obras_qs.filter(Q(nome__icontains=term) | Q(endereco__icontains=term) | Q(cidade__icontains=term))
 
-    results = []
-    for obra in obras_qs[:10]:
-        results.append(
-            {
-                "id": obra.id,
-                "text": obra.nome,
-                "endereco": f"{obra.endereco}, {obra.cidade}" if hasattr(obra, "endereco") else "",
-            }
-        )
+    results = [
+        {
+            "id": obra.id,
+            "text": obra.nome,
+            "endereco": f"{obra.endereco}, {obra.cidade}" if hasattr(obra, "endereco") else "",
+        }
+        for obra in obras_qs[:10]
+    ]
 
     return JsonResponse({"results": results})
 
 
-# Views funcionais (legacy)
-def obra_list(request):
-    """View funcional para listagem (legacy)"""
+# Views funcionais (legacy - redirecionam para class-based views ou wizard)
+def obra_list(request: HttpRequest) -> HttpResponse:
+    """View funcional para listagem (legacy)."""
     return ObraListView.as_view()(request)
 
 
-def obra_add(request):
-    """View funcional para criação (legacy) -> redireciona ao wizard"""
+def obra_add(_request: HttpRequest) -> HttpResponse:
+    """View funcional para criação (legacy) - redireciona ao wizard."""
     return redirect("obras:obra_wizard")
 
 
-def obra_edit(request, pk):
-    """View funcional para edição (legacy) -> redireciona ao wizard"""
+def obra_edit(_request: HttpRequest, pk: int) -> HttpResponse:
+    """View funcional para edição (legacy) - redireciona ao wizard."""
     return redirect("obras:obra_wizard_edit", pk=pk)
 
 
-def obra_detail(request, pk):
-    """View funcional para detalhes (legacy)"""
+def obra_detail(request: HttpRequest, pk: int) -> HttpResponse:
+    """View funcional para detalhes (legacy)."""
     return ObraDetailView.as_view()(request, pk=pk)
 
 
-def obra_delete(request, pk):
-    """View funcional para exclusão (legacy)"""
+def obra_delete(request: HttpRequest, pk: int) -> HttpResponse:
+    """View funcional para exclusão (legacy)."""
     return ObraDeleteView.as_view()(request, pk=pk)

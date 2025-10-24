@@ -13,7 +13,8 @@
 
 {% block content %}
 <div class="container-fluid py-4">
-    {# Barra de Progresso adaptativa: usa variáveis do wizard de funcionários (steps_meta) ou fallback para steps_list #}
+    {# Barra de Progresso adaptativa: oculta em modo direto #}
+    {% if not wizard_direct_mode %}
     <div class="row mb-4">
         <div class="col-12">
             {% with steps_dict=steps_list %}
@@ -66,6 +67,7 @@
             {% endwith %}
         </div>
     </div>
+    {% endif %}
 
     <!-- Main Content -->
     <div class="row">
@@ -74,7 +76,11 @@
                 <div class="card-header">
                     <h5 class="mb-0">
                         <i class="fas fa-{{ step_icon|default:'user' }} me-2"></i>
-                        {% firstof step_title wizard_title "Assistente" %}
+                        {% if wizard_direct_mode %}
+                            Configuração de Módulos
+                        {% else %}
+                            {% firstof step_title wizard_title "Assistente" %}
+                        {% endif %}
                     </h5>
                 </div>
                 <div class="card-body">
@@ -89,6 +95,7 @@
                         
                         <!-- Form Actions Modernizadas -->
                         <div class="wizard-navigation">
+                            {% if not wizard_direct_mode %}
                             <div class="nav-left">
                                 {% if can_go_prev %}
                                     <button type="submit" name="wizard_prev" value="prev" class="btn-ghost">
@@ -103,33 +110,44 @@
                             <div class="nav-center">
                                 <span class="step-indicator">Passo {{ current_step|default:'1' }} de {{ total_steps|default:'7' }}</span>
                             </div>
-                            <div class="nav-right">
-                                <!-- NOVA FUNCIONALIDADE: Botões para modo edição -->
-                                {% if is_editing %}
-                                    <button type="submit" name="wizard_save_step" value="save" class="btn-modern btn-warning me-2" 
-                                            data-bs-toggle="tooltip" 
-                                            data-bs-placement="top" 
-                                            title="Salvar apenas este passo e continuar editando">
-                                        <i class="fas fa-save me-1"></i>Salvar Step
-                                    </button>
-                                    {% with list_name=wizard_list_url_name|default:'core:tenant_list' %}
-                                    <a href="{% url list_name %}" class="btn-modern btn-secondary me-2"
-                                       data-bs-toggle="tooltip" 
-                                       data-bs-placement="top" 
-                                       title="Voltar para a lista de empresas">
-                                        <i class="fas fa-list me-1"></i>Ir para Lista
+                            {% endif %}
+                            <div class="nav-right {% if wizard_direct_mode %}w-100 justify-content-between{% endif %}">
+                                {% if wizard_direct_mode %}
+                                    <!-- Modo Direto: Apenas Salvar e Voltar -->
+                                    <a href="{% url 'core:tenant_list' %}" class="btn-modern btn-secondary">
+                                        <i class="fas fa-times me-1"></i>Cancelar
                                     </a>
-                                    {% endwith %}
-                                {% endif %}
-                                
-                                {% if is_last_step or current_step == wizard_total_steps %}
-                                    <button type="submit" name="wizard_action" value="finish" class="btn-modern btn-success">
-                                        <i class="fas fa-check me-2"></i>Finalizar
+                                    <button type="submit" name="wizard_save_step" value="save" class="btn-modern btn-success">
+                                        <i class="fas fa-save me-1"></i>Salvar Módulos
                                     </button>
                                 {% else %}
-                                    <button type="submit" name="wizard_action" value="next" class="btn-modern btn-primary">
-                                        Próximo<i class="fas fa-chevron-right ms-2"></i>
-                                    </button>
+                                    <!-- NOVA FUNCIONALIDADE: Botões para modo edição -->
+                                    {% if is_editing %}
+                                        <button type="submit" name="wizard_save_step" value="save" class="btn-modern btn-warning me-2" 
+                                                data-bs-toggle="tooltip" 
+                                                data-bs-placement="top" 
+                                                title="Salvar apenas este passo e continuar editando">
+                                            <i class="fas fa-save me-1"></i>Salvar Step
+                                        </button>
+                                        {% with list_name=wizard_list_url_name|default:'core:tenant_list' %}
+                                        <a href="{% url list_name %}" class="btn-modern btn-secondary me-2"
+                                           data-bs-toggle="tooltip" 
+                                           data-bs-placement="top" 
+                                           title="Voltar para a lista de empresas">
+                                            <i class="fas fa-list me-1"></i>Ir para Lista
+                                        </a>
+                                        {% endwith %}
+                                    {% endif %}
+                                    
+                                    {% if is_last_step or current_step == wizard_total_steps %}
+                                        <button type="submit" name="wizard_action" value="finish" class="btn-modern btn-success">
+                                            <i class="fas fa-check me-2"></i>Finalizar
+                                        </button>
+                                    {% else %}
+                                        <button type="submit" name="wizard_action" value="next" class="btn-modern btn-primary">
+                                            Próximo<i class="fas fa-chevron-right ms-2"></i>
+                                        </button>
+                                    {% endif %}
                                 {% endif %}
                             </div>
                         </div>

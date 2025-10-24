@@ -38,8 +38,6 @@ class PerfilStatusAuthenticationBackend(ModelBackend):
             return None
         perfil = getattr(user, "perfil_estendido", None)
         if perfil and perfil.tentativas_login_falhadas:
-            # DEBUG: reset tentativas
-            # print(f"[DEBUG auth_backend] reset tentativas user={user.username} antes={perfil.tentativas_login_falhadas}")
             perfil.tentativas_login_falhadas = 0
             perfil.save(update_fields=["tentativas_login_falhadas"])
         return user

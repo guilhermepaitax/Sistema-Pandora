@@ -343,12 +343,16 @@
         if (!section) return; // não é o step 5
 
         const LS_KEY = 'tenant_wizard_enabled_modules';
-        const moduleCheckboxes = section.querySelectorAll('input[name="enabled_modules"]');
+        const modulesFieldName = section.dataset.modulesFieldName || 'enabled_modules';
+        const moduleSelector = `input[name="${modulesFieldName}"]`;
+        const moduleCheckboxes = section.querySelectorAll(moduleSelector);
         const moduleCounter = document.getElementById('moduleCounter');
         const masterCategoryCbs = section.querySelectorAll('.master-category');
+        const portalAtivoCb = section.querySelector('.portal-ativo-checkbox');
+        const portalModuleCb = section.querySelector(`${moduleSelector}[value="portal_cliente"]`);
 
         function updateModuleCount() {
-            const selected = section.querySelectorAll('input[name="enabled_modules"]:checked').length;
+            const selected = section.querySelectorAll(`${moduleSelector}:checked`).length;
             const total = moduleCheckboxes.length;
             if (moduleCounter) {
                 moduleCounter.textContent = `${selected} de ${total} módulos selecionados`;
@@ -357,7 +361,7 @@
         }
 
         function syncMasterForCategory(catSlug) {
-            const items = section.querySelectorAll(`.module-card[data-category-item="${catSlug}"] input[name="enabled_modules"]`);
+            const items = section.querySelectorAll(`.module-card[data-category-item="${catSlug}"] ${moduleSelector}`);
             const master = section.querySelector(`.master-category[data-category-target="${catSlug}"]`);
             if (!master) return;
             const total = items.length;
@@ -368,7 +372,7 @@
 
         function saveSelectedToLocalStorage() {
             try {
-                const selected = Array.from(section.querySelectorAll('input[name="enabled_modules"]:checked')).map(c => c.value);
+                const selected = Array.from(section.querySelectorAll(`${moduleSelector}:checked`)).map(c => c.value);
                 if (selected.length) localStorage.setItem(LS_KEY, JSON.stringify(selected));
                 else localStorage.removeItem(LS_KEY);
             } catch (_) { }
@@ -377,7 +381,6 @@
         function handlePortalAtivoVisibility() {
             const portalCard = section.querySelector('.portal-ativo-wrapper');
             if (!portalCard) return;
-            const portalModuleCb = section.querySelector('input[name="enabled_modules"][value="portal_cliente"]');
             const warning = document.getElementById('portalAtivoWarning');
             if (portalModuleCb && portalModuleCb.checked) {
                 portalCard.style.display = 'block';
@@ -407,7 +410,7 @@
         masterCategoryCbs.forEach(master => {
             master.addEventListener('change', () => {
                 const cat = master.getAttribute('data-category-target');
-                const items = section.querySelectorAll(`.module-card[data-category-item="${cat}"] input[name="enabled_modules"]`);
+                const items = section.querySelectorAll(`.module-card[data-category-item="${cat}"] ${moduleSelector}`);
                 items.forEach(i => { i.checked = master.checked; });
                 updateModuleCount();
                 syncMasterForCategory(cat);
@@ -446,6 +449,28 @@
                 if (raw) { const arr = JSON.parse(raw); if (Array.isArray(arr)) moduleCheckboxes.forEach(cb => { if (arr.includes(cb.value)) cb.checked = true; }); }
             }
         } catch (_) { }
+
+        // Se o usuário marcar "portal_ativo", garantir que o módulo correspondente seja marcado
+        if (portalAtivoCb) {
+            portalAtivoCb.addEventListener('change', () => {
+                if (portalAtivoCb.checked && portalModuleCb && !portalModuleCb.checked) {
+                    portalModuleCb.checked = true;
+                    updateModuleCount();
+                    const card = portalModuleCb.closest('.module-card');
+                    if (card) {
+                        const cat = card.getAttribute('data-category-item');
+                        if (cat) syncMasterForCategory(cat);
+                    }
+                    handlePortalAtivoVisibility();
+                    saveSelectedToLocalStorage();
+                }
+            });
+        }
+
+        // Sincroniza UI inicial
+        updateModuleCount();
+        masterCategoryCbs.forEach(cb => { const cat = cb.getAttribute('data-category-target'); syncMasterForCategory(cat); });
+        handlePortalAtivoVisibility();
 
         // Subdomínio: validação e verificação remota
         const subdomainInput = section.querySelector('input[name="subdomain"]');

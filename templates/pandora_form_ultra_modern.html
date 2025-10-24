@@ -74,7 +74,7 @@
                                     {% include 'partials/forms/endereco_principal.html' with principal_form=data.principal_form adicional_formset=data.adicional_formset %}
                                     {% include 'partials/forms/contatos_formset.html' with contatos_formset=data.contatos_formset %}
                                     {% include 'partials/forms/documentos_formset.html' with documentos_formset=data.documentos_formset %}
-                                    {% include 'partials/forms/modules_selection.html' with form=data.module_form available_modules=data.available_modules module_icons=data.module_icons module_categories=data.module_categories selected_modules=data.selected_modules %}
+                                    {# REMOVIDO: modules_selection.html - não é usado, wizard tem seu próprio template #}
                                     {% if data.admins_formset %}
                                         {% include 'core/partials/admins_formset.html' with admins_formset=data.admins_formset %}
                                     {% endif %}

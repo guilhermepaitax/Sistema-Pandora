@@ -1,6 +1,6 @@
 # Índice de Documentação
 
-Atualizado: 2025-09-09
+Atualizado: 2025-10-21
 
 Este índice lista os documentos canônicos por tema e aponta potenciais duplicidades a tratar.
 
@@ -8,15 +8,17 @@ Este índice lista os documentos canônicos por tema e aponta potenciais duplici
 - Gestão de Usuários (consolidado): `docs/USER_MANAGEMENT.md`
 - Two-Factor (2FA) – operação e troubleshooting: `docs/TWOFA_SERVICE.md`
 - 2FA – visão geral de endpoints: `docs/2FA.md`
+- 2FA – Relatório de Atualização: `docs/RELATORIO_ATUALIZACAO_2FA.md` (NOVO - 21/10/2025)
 - Permission Resolver – guia consolidado: `docs/PERMISSION_RESOLVER.md` (inclui formato de ACTION, precedência, Decision API e notas técnicas)
 - Permissões Agendamentos (clínico): `docs/AGENDAMENTOS_PERMISSOES.md`
+- **Auditoria Completa de Módulos e Templates:** `docs/AUDITORIA_COMPLETA_MODULOS_TEMPLATES.md` (NOVO - 21/10/2025)
+- **Resumo Executivo - Auditoria:** `docs/RESUMO_EXECUTIVO_AUDITORIA.md` (NOVO - 21/10/2025)
 
 ## Módulos
 - Agendamentos (resumo): `docs/MODULE_AGENDAMENTOS.md`
 - Agendamentos (proposta detalhada): `docs/MODULO_AGENDAMENTOS.md`
 - Prontuários (resumo): `docs/MODULE_PRONTUARIOS.md`
 - Prontuários – arquitetura (com status feito x faltante): `docs/PRONTUARIOS_ARQUITETURA.md`
-- Prontuários – plano de modernização (legacy): `docs/legacy/PRONTUARIOS_MODERNIZACAO_PLAN.md`
 - Estoque – plano de modernização: `docs/PLANO_MODERNIZACAO_ESTOQUE.md`
 - Serviços – perfil clínico (validação): `docs/CLINICO_PERFIL_FORM_VALIDACAO.md`
 

@@ -1,7 +1,7 @@
-import datetime
+"""AI Auditor views module - code analysis and audit functionality."""
+
 import json
 import re
-from datetime import datetime
 from pathlib import Path
 
 from django.contrib import messages
@@ -16,22 +16,27 @@ from django.views import View
 from django.views.decorators.csrf import csrf_exempt
 from django.views.generic import DetailView, ListView, TemplateView, UpdateView
 
-from core.mixins import PageTitleMixin, TenantRequiredMixin
+from core.mixins import ModuleRequiredMixin, PageTitleMixin, TenantRequiredMixin
 from core.utils import get_current_tenant
 
 from .forms import AIAuditorSettingsForm
 from .models import AIAuditorSettings, AuditSession, CodeIssue
 
 
-class AIAuditorDashboardView(LoginRequiredMixin, TenantRequiredMixin, PageTitleMixin, TemplateView):
-    """
-    Dashboard principal do módulo AI Auditor com estatísticas gerais
-    """
+class AIAuditorMixin(ModuleRequiredMixin):
+    """Mixin base para views de AI Auditor."""
+
+    required_module = "ai_auditor"
+
+
+class AIAuditorDashboardView(LoginRequiredMixin, TenantRequiredMixin, AIAuditorMixin, PageTitleMixin, TemplateView):
+    """Dashboard principal do módulo AI Auditor com estatísticas gerais."""
 
     template_name = "ai_auditor/ai_auditor_home.html"
     page_title = _("Dashboard - Agente de IA")
 
-    def get_context_data(self, **kwargs):
+    def get_context_data(self, **kwargs: dict) -> dict:
+        """Add statistics and recent sessions to context."""
         context = super().get_context_data(**kwargs)
         tenant = get_current_tenant(self.request)
 
@@ -67,7 +72,7 @@ class AIAuditorDashboardView(LoginRequiredMixin, TenantRequiredMixin, PageTitleM
                     "low_issues": severity_distribution["low"],
                     "titulo": _("Agente de IA"),
                     "subtitulo": _("Visão geral do módulo Agente de IA"),
-                }
+                },
             )
         else:
             context.update(
@@ -84,7 +89,7 @@ class AIAuditorDashboardView(LoginRequiredMixin, TenantRequiredMixin, PageTitleM
                     "low_issues": 0,
                     "titulo": _("Agente de IA"),
                     "subtitulo": _("Visão geral do módulo Agente de IA"),
-                }
+                },
             )
 
         context["tenant"] = tenant
@@ -94,12 +99,12 @@ class AIAuditorDashboardView(LoginRequiredMixin, TenantRequiredMixin, PageTitleM
 # Função de dashboard mantida para compatibilidade (será depreciada)
 @login_required
 def ai_auditor_home(request):
-    """DEPRECIADO: Use AIAuditorDashboardView.as_view() no place desta função"""
+    """DEPRECIADO: Use AIAuditorDashboardView.as_view() no place desta função."""
     view = AIAuditorDashboardView.as_view()
     return view(request)
 
 
-class DashboardView(LoginRequiredMixin, TenantRequiredMixin, PageTitleMixin, TemplateView):
+class DashboardView(LoginRequiredMixin, TenantRequiredMixin, AIAuditorMixin, PageTitleMixin, TemplateView):
     template_name = "ai_auditor/ai_auditor_home.html"
     page_title = _("Dashboard - Agente de IA")
 
@@ -138,7 +143,7 @@ class DashboardView(LoginRequiredMixin, TenantRequiredMixin, PageTitleMixin, Tem
                     "high_issues": severity_distribution["high"],
                     "medium_issues": severity_distribution["medium"],
                     "low_issues": severity_distribution["low"],
-                }
+                },
             )
         else:
             context.update(
@@ -154,14 +159,14 @@ class DashboardView(LoginRequiredMixin, TenantRequiredMixin, PageTitleMixin, Tem
                     "high_issues": 0,
                     "medium_issues": 0,
                     "low_issues": 0,
-                }
+                },
             )
 
         return context
 
 
-class ChatView(LoginRequiredMixin, TenantRequiredMixin, PageTitleMixin, TemplateView):
-    """View para chat interativo com o Agente de IA"""
+class ChatView(LoginRequiredMixin, TenantRequiredMixin, AIAuditorMixin, PageTitleMixin, TemplateView):
+    """View para chat interativo com o Agente de IA."""
 
     template_name = "ai_auditor/chat.html"
     page_title = _("Chat com Agente de IA")
@@ -173,10 +178,11 @@ class ChatView(LoginRequiredMixin, TenantRequiredMixin, PageTitleMixin, Template
 
 
 @method_decorator(csrf_exempt, name="dispatch")
-class ChatAPIView(LoginRequiredMixin, TenantRequiredMixin, View):
-    """API para processar mensagens do chat com IA"""
+class ChatAPIView(LoginRequiredMixin, TenantRequiredMixin, AIAuditorMixin, View):
+    """API para processar mensagens do chat com IA."""
 
-    def post(self, request, *args, **kwargs):
+    def post(self, request, *args, **kwargs):  # noqa: ARG002
+        """Handle POST request to process chat messages."""
         try:
             data = json.loads(request.body)
             user_message = data.get("message", "").strip()
@@ -192,15 +198,15 @@ class ChatAPIView(LoginRequiredMixin, TenantRequiredMixin, View):
             tenant = get_current_tenant(request)
             ai_response = self.generate_ai_response(user_message, tenant)
 
-            return JsonResponse({"response": ai_response, "timestamp": datetime.datetime.now().isoformat()})
+            return JsonResponse({"response": ai_response, "timestamp": timezone.now().isoformat()})
 
         except json.JSONDecodeError:
             return JsonResponse({"error": "Formato JSON inválido"}, status=400)
-        except Exception as e:
-            return JsonResponse({"error": f"Erro interno: {str(e)}"}, status=500)
+        except Exception as e:  # noqa: BLE001
+            return JsonResponse({"error": f"Erro interno: {e!s}"}, status=500)
 
     def execute_audit(self, request):
-        """Executa uma auditoria completa do sistema"""
+        """Executa uma auditoria completa do sistema."""
         try:
             tenant = get_current_tenant(request)
             if not tenant:
@@ -236,6 +242,13 @@ class ChatAPIView(LoginRequiredMixin, TenantRequiredMixin, View):
             for issue_data in issues_found:
                 CodeIssue.objects.create(session=session, **issue_data)
 
+            # Calcular tempo de execução
+            execution_time = (
+                (session.completed_at - session.started_at).total_seconds()
+                if session.completed_at and session.started_at
+                else 0
+            )
+
             response_text = f"""🔍 **Auditoria Completa Executada**
 
 ✅ **Sessão #{session.id} concluída com sucesso!**
@@ -252,22 +265,22 @@ class ChatAPIView(LoginRequiredMixin, TenantRequiredMixin, View):
 • Listar problemas: [Ver Problemas](/ai-auditor/issues/)
 • Aplicar correções automáticas (se disponível)
 
-⏱️ **Tempo de execução:** {(session.completed_at - session.started_at).total_seconds():.2f} segundos"""
+⏱️ **Tempo de execução:** {execution_time:.2f} segundos"""
 
             return JsonResponse(
                 {
                     "response": response_text,
-                    "timestamp": datetime.datetime.now().isoformat(),
+                    "timestamp": timezone.now().isoformat(),
                     "session_id": session.id,
                     "issues_count": session.total_issues,
-                }
+                },
             )
 
-        except Exception as e:
-            return JsonResponse({"error": f"Erro ao executar auditoria: {str(e)}"}, status=500)
+        except Exception as e:  # noqa: BLE001
+            return JsonResponse({"error": f"Erro ao executar auditoria: {e!s}"}, status=500)
 
-    def analyze_codebase(self, session):
-        """Analisa o código base e retorna lista de problemas encontrados"""
+    def analyze_codebase(self, session):  # noqa: ARG002
+        """Analisa o código base e retorna lista de problemas encontrados."""
         issues = []
         base_path = Path("/home/ubuntu")
 
@@ -425,7 +438,7 @@ class ChatAPIView(LoginRequiredMixin, TenantRequiredMixin, View):
         return issues
 
     def analyze_django_app(self, app_name, app_path):
-        """Analisa um app Django específico"""
+        """Analisa um app Django específico."""
         issues = []
 
         # Analisar arquivos Python
@@ -434,15 +447,14 @@ class ChatAPIView(LoginRequiredMixin, TenantRequiredMixin, View):
                 continue
 
             try:
-                with open(py_file, encoding="utf-8") as f:
-                    content = f.read()
+                content = py_file.read_text(encoding="utf-8")
 
                 # Análises específicas
                 issues.extend(self.check_security_issues(app_name, py_file, content))
                 issues.extend(self.check_performance_issues(app_name, py_file, content))
                 # (analisador de qualidade legacy removido)
 
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001
                 issues.append(
                     {
                         "app_name": app_name,
@@ -451,16 +463,16 @@ class ChatAPIView(LoginRequiredMixin, TenantRequiredMixin, View):
                         "issue_type": "quality",
                         "severity": "low",
                         "title": "Erro ao analisar arquivo",
-                        "description": f"Não foi possível analisar o arquivo: {str(e)}",
+                        "description": f"Não foi possível analisar o arquivo: {e!s}",
                         "recommendation": "Verificar encoding e sintaxe do arquivo",
                         "auto_fixable": False,
-                    }
+                    },
                 )
 
         return issues
 
     def check_security_issues(self, app_name, file_path, content):
-        """Verifica problemas de segurança"""
+        """Verifica problemas de segurança."""
         issues = []
         lines = content.split("\n")
 
@@ -479,7 +491,7 @@ class ChatAPIView(LoginRequiredMixin, TenantRequiredMixin, View):
                         "recommendation": "Use parâmetros seguros em consultas SQL",
                         "code_snippet": line.strip(),
                         "auto_fixable": False,
-                    }
+                    },
                 )
 
             # Uso de eval() ou exec()
@@ -496,7 +508,7 @@ class ChatAPIView(LoginRequiredMixin, TenantRequiredMixin, View):
                         "recommendation": "Evite usar eval() e exec(). Use alternativas seguras",
                         "code_snippet": line.strip(),
                         "auto_fixable": False,
-                    }
+                    },
                 )
 
             # DEBUG = True em produção
@@ -514,13 +526,13 @@ class ChatAPIView(LoginRequiredMixin, TenantRequiredMixin, View):
                         "code_snippet": line.strip(),
                         "auto_fixable": True,
                         "suggested_fix": "DEBUG = False",
-                    }
+                    },
                 )
 
         return issues
 
     def check_performance_issues(self, app_name, file_path, content):
-        """Verifica problemas de performance"""
+        """Verifica problemas de performance."""
         issues = []
         lines = content.split("\n")
 
@@ -539,7 +551,7 @@ class ChatAPIView(LoginRequiredMixin, TenantRequiredMixin, View):
                         "recommendation": "Use select_related() ou prefetch_related()",
                         "code_snippet": line.strip(),
                         "auto_fixable": False,
-                    }
+                    },
                 )
 
             # Uso de print() em views
@@ -557,7 +569,7 @@ class ChatAPIView(LoginRequiredMixin, TenantRequiredMixin, View):
                         "code_snippet": line.strip(),
                         "auto_fixable": True,
                         "suggested_fix": line.replace("print(", "logger.info("),
-                    }
+                    },
                 )
 
         return issues
@@ -565,8 +577,8 @@ class ChatAPIView(LoginRequiredMixin, TenantRequiredMixin, View):
     # (método check_code_quality legacy removido; ruff cobre lint/format fora da aplicação)
 
     def generate_ai_response(self, message, tenant):
-        """
-        Gera uma resposta da IA baseada na mensagem do usuário.
+        """Gera uma resposta da IA baseada na mensagem do usuário.
+
         Esta é uma implementação melhorada que pode ser expandida com IA real.
         """
         message_lower = message.lower()
@@ -596,7 +608,7 @@ Atualmente temos **{issues_count} problemas** identificados no sistema.
 Digite `/auditoria` para começar uma análise completa agora!"""
 
         # Respostas sobre problemas
-        elif any(word in message_lower for word in ["problema", "erro", "bug", "issue"]):
+        if any(word in message_lower for word in ["problema", "erro", "bug", "issue"]):
             critical_count = CodeIssue.objects.filter(session__tenant=tenant, severity="critical").count()
             high_count = CodeIssue.objects.filter(session__tenant=tenant, severity="high").count()
             return f"""🚨 **Status dos Problemas**
@@ -618,7 +630,7 @@ Digite `/auditoria` para começar uma análise completa agora!"""
 Posso gerar um relatório detalhado ou sugerir correções específicas. O que prefere?"""
 
         # Respostas sobre testes
-        elif any(word in message_lower for word in ["teste", "test", "cobertura"]):
+        if any(word in message_lower for word in ["teste", "test", "cobertura"]):
             return """🧪 **Geração de Testes Automatizada**
 
 **🎯 Tipos de testes que posso gerar:**
@@ -642,7 +654,7 @@ Posso gerar um relatório detalhado ou sugerir correções específicas. O que p
 Qual tipo de teste você gostaria que eu priorizasse?"""
 
         # Respostas sobre performance
-        elif any(word in message_lower for word in ["performance", "lento", "otimizar", "velocidade"]):
+        if any(word in message_lower for word in ["performance", "lento", "otimizar", "velocidade"]):
             return """⚡ **Otimização de Performance**
 
 **🔍 Análises que posso realizar:**
@@ -664,7 +676,7 @@ Qual tipo de teste você gostaria que eu priorizasse?"""
 Você notou alguma área específica com problemas de lentidão?"""
 
         # Respostas sobre segurança
-        elif any(word in message_lower for word in ["segurança", "security", "vulnerabilidade"]):
+        if any(word in message_lower for word in ["segurança", "security", "vulnerabilidade"]):
             return """🔒 **Análise de Segurança Avançada**
 
 **🛡️ Verificações de segurança:**
@@ -691,7 +703,7 @@ Você notou alguma área específica com problemas de lentidão?"""
 Gostaria de uma análise de segurança específica?"""
 
         # Respostas sobre relatórios
-        elif any(word in message_lower for word in ["relatório", "report", "dashboard"]):
+        if any(word in message_lower for word in ["relatório", "report", "dashboard"]):
             sessions_count = AuditSession.objects.filter(tenant=tenant).count()
             return f"""📊 **Relatórios e Dashboards**
 
@@ -717,7 +729,7 @@ Gostaria de uma análise de segurança específica?"""
 Que tipo de relatório você precisa? Posso gerar um agora mesmo!"""
 
         # Respostas sobre comandos
-        elif any(word in message_lower for word in ["comando", "help", "/help"]):
+        if any(word in message_lower for word in ["comando", "help", "/help"]):
             return """🤖 **Comandos Disponíveis**
 
 **🔍 Auditoria:**
@@ -743,7 +755,7 @@ Ou: "/auditoria" para análise completa
 Como posso ajudar você hoje?"""
 
         # Respostas sobre ajuda
-        elif any(word in message_lower for word in ["ajuda", "help", "como", "o que"]):
+        if any(word in message_lower for word in ["ajuda", "help", "como", "o que"]):
             return """🤖 **Agente de IA - Pandora ERP**
 
 **🎯 Sou especializado em:**
@@ -780,7 +792,7 @@ Como posso ajudar você hoje?"""
 **💡 Dica:** Sou mais eficiente com comandos específicos!"""
 
         # Saudações
-        elif any(word in message_lower for word in ["oi", "olá", "hello", "hi"]):
+        if any(word in message_lower for word in ["oi", "olá", "hello", "hi"]):
             return f"""👋 **Olá! Sou o Agente de IA do Pandora ERP**
 
 **🎯 Estou aqui para ajudar com:**
@@ -795,13 +807,14 @@ Como posso ajudar você hoje?"""
 • "problemas críticos" - Ver issues importantes
 • "gerar relatório" - Dashboards e métricas
 
-**💡 Posso analisar {CodeIssue.objects.filter(session__tenant=tenant).count()} problemas já identificados no seu sistema.**
+**💡 Posso analisar {CodeIssue.objects.filter(
+    session__tenant=tenant
+).count()} problemas já identificados no seu sistema.**
 
 Como posso ajudar você hoje? Digite `/auditoria` para começar!"""
 
         # Resposta padrão melhorada
-        else:
-            return """🤔 **Interessante pergunta!**
+        return """🤔 **Interessante pergunta!**
 
 **🎯 Posso ajudar com:**
 • **`/auditoria`** - Análise completa do sistema
@@ -821,7 +834,7 @@ Como posso ajudar você hoje? Digite `/auditoria` para começar!"""
 Poderia reformular sua pergunta ou escolher uma das opções acima?"""
 
 
-class AuditSessionListView(LoginRequiredMixin, TenantRequiredMixin, PageTitleMixin, ListView):
+class AuditSessionListView(LoginRequiredMixin, TenantRequiredMixin, AIAuditorMixin, PageTitleMixin, ListView):
     model = AuditSession
     template_name = "ai_auditor/audit_session_list.html"
     context_object_name = "sessions"
@@ -843,7 +856,7 @@ class AuditSessionListView(LoginRequiredMixin, TenantRequiredMixin, PageTitleMix
         return context
 
 
-class AuditSessionDetailView(LoginRequiredMixin, TenantRequiredMixin, PageTitleMixin, DetailView):
+class AuditSessionDetailView(LoginRequiredMixin, TenantRequiredMixin, AIAuditorMixin, PageTitleMixin, DetailView):
     model = AuditSession
     template_name = "ai_auditor/audit_session_detail.html"
     context_object_name = "session"
@@ -866,7 +879,8 @@ class AuditSessionDetailView(LoginRequiredMixin, TenantRequiredMixin, PageTitleM
         tenant = get_current_tenant(self.request)
         if tenant:
             context["issues"] = CodeIssue.objects.filter(session__tenant=tenant, session=self.object).order_by(
-                "-severity", "-created_at"
+                "-severity",
+                "-created_at",
             )
 
             # Estatísticas para o template
@@ -897,7 +911,9 @@ class AuditSessionDetailView(LoginRequiredMixin, TenantRequiredMixin, PageTitleM
         return context
 
 
-class CodeIssueListView(LoginRequiredMixin, TenantRequiredMixin, PageTitleMixin, ListView):
+class CodeIssueListView(LoginRequiredMixin, TenantRequiredMixin, AIAuditorMixin, PageTitleMixin, ListView):
+    """List view for code issues with filtering and statistics."""
+
     model = CodeIssue
     template_name = "ai_auditor/analise.html"
     page_title = _("Análise de Código")
@@ -905,6 +921,7 @@ class CodeIssueListView(LoginRequiredMixin, TenantRequiredMixin, PageTitleMixin,
     paginate_by = 20
 
     def get_queryset(self):
+        """Get filtered queryset based on tenant and request parameters."""
         tenant = get_current_tenant(self.request)
         queryset = CodeIssue.objects.filter(session__tenant=tenant) if tenant else CodeIssue.objects.none()
 
@@ -920,10 +937,14 @@ class CodeIssueListView(LoginRequiredMixin, TenantRequiredMixin, PageTitleMixin,
         if issue_type:
             queryset = queryset.filter(issue_type=issue_type)
 
-    def get_context_data(self, **kwargs):
+        return queryset.order_by("-severity", "-created_at")
+
+    def get_context_data(self, **kwargs: dict) -> dict:
+        """Add statistics and filter choices to context."""
         context = super().get_context_data(**kwargs)
         tenant = get_current_tenant(self.request)
 
+        # Adicionar contadores de severidade
         if tenant:
             all_issues = CodeIssue.objects.filter(session__tenant=tenant)
             context["critical_count"] = all_issues.filter(severity="critical").count()
@@ -936,16 +957,11 @@ class CodeIssueListView(LoginRequiredMixin, TenantRequiredMixin, PageTitleMixin,
             context["medium_count"] = 0
             context["low_count"] = 0
 
-        return context
-
-        return queryset.order_by("-severity", "-created_at")
-
-    def get_context_data(self, **kwargs):
-        context = super().get_context_data(**kwargs)
+        # Adicionar dados para template
         context["title"] = "Problemas de Código"
         context["page_title"] = "Problemas de Código"
         context["page_subtitle"] = "Lista de problemas identificados pela auditoria automatizada"
-        context["items"] = context["issues"]  # Para compatibilidade com template ultra-moderno
+        context["items"] = context["issues"]
         context["can_add"] = False
         context["severity_choices"] = CodeIssue.SEVERITY_CHOICES
         context["status_choices"] = CodeIssue.STATUS_CHOICES
@@ -954,17 +970,17 @@ class CodeIssueListView(LoginRequiredMixin, TenantRequiredMixin, PageTitleMixin,
         # Estatísticas para o template
         issues = context["issues"]
         context["stats"] = {
-            "total": issues.count(),
-            "critical": issues.filter(severity="critical").count(),
-            "high": issues.filter(severity="high").count(),
-            "medium": issues.filter(severity="medium").count(),
-            "low": issues.filter(severity="low").count(),
+            "total": issues.count() if hasattr(issues, "count") else len(issues),
+            "critical": sum(1 for i in issues if i.severity == "critical"),
+            "high": sum(1 for i in issues if i.severity == "high"),
+            "medium": sum(1 for i in issues if i.severity == "medium"),
+            "low": sum(1 for i in issues if i.severity == "low"),
         }
 
         return context
 
 
-class AIAuditorSettingsView(LoginRequiredMixin, TenantRequiredMixin, PageTitleMixin, UpdateView):
+class AIAuditorSettingsView(LoginRequiredMixin, TenantRequiredMixin, AIAuditorMixin, PageTitleMixin, UpdateView):
     model = AIAuditorSettings
     form_class = AIAuditorSettingsForm
     template_name = "ai_auditor/settings.html"
@@ -992,10 +1008,11 @@ class AIAuditorSettingsView(LoginRequiredMixin, TenantRequiredMixin, PageTitleMi
 
 
 @method_decorator(csrf_exempt, name="dispatch")
-class ExecuteAuditView(LoginRequiredMixin, TenantRequiredMixin, View):
-    """View para executar auditoria via botão no dashboard"""
+class ExecuteAuditView(LoginRequiredMixin, TenantRequiredMixin, AIAuditorMixin, View):
+    """View para executar auditoria via botão no dashboard."""
 
-    def post(self, request, *args, **kwargs):
+    def post(self, request, *args, **kwargs):  # noqa: ARG002
+        """Handle POST request to execute audit."""
         try:
             tenant = get_current_tenant(request)
             if not tenant:
@@ -1034,12 +1051,12 @@ class ExecuteAuditView(LoginRequiredMixin, TenantRequiredMixin, View):
             messages.success(request, f"Auditoria concluída! {session.total_issues} problemas encontrados.")
             return redirect("ai_auditor:session_detail", pk=session.id)
 
-        except Exception as e:
-            messages.error(request, f"Erro ao executar auditoria: {str(e)}")
+        except Exception as e:  # noqa: BLE001
+            messages.error(request, f"Erro ao executar auditoria: {e!s}")
             return redirect("ai_auditor:dashboard")
 
-    def quick_analysis(self, session):
-        """Análise rápida para demonstração"""
+    def quick_analysis(self, session):  # noqa: ARG002
+        """Análise rápida para demonstração."""
         return [
             {
                 "app_name": "core",
@@ -1067,10 +1084,11 @@ class ExecuteAuditView(LoginRequiredMixin, TenantRequiredMixin, View):
         ]
 
 
-class ExecuteSecurityAuditView(LoginRequiredMixin, TenantRequiredMixin, View):
-    """View para executar auditoria focada em segurança"""
+class ExecuteSecurityAuditView(LoginRequiredMixin, TenantRequiredMixin, AIAuditorMixin, View):
+    """View para executar auditoria focada em segurança."""
 
-    def post(self, request, *args, **kwargs):
+    def post(self, request, *args, **kwargs):  # noqa: ARG002
+        """Handle POST request for security audit."""
         try:
             tenant = get_current_tenant(request)
             if not tenant:
@@ -1112,16 +1130,17 @@ class ExecuteSecurityAuditView(LoginRequiredMixin, TenantRequiredMixin, View):
                     "session_id": session.id,
                     "total_issues": session.total_issues,
                     "critical_issues": session.critical_issues,
-                }
+                },
             )
 
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             return JsonResponse(
-                {"success": False, "error": f"Erro ao executar auditoria de segurança: {str(e)}"}, status=500
+                {"success": False, "error": f"Erro ao executar auditoria de segurança: {e!s}"},
+                status=500,
             )
 
-    def analyze_security_comprehensive(self, session):
-        """Análise completa de segurança"""
+    def analyze_security_comprehensive(self, session):  # noqa: ARG002
+        """Análise completa de segurança."""
         return [
             {
                 "app_name": "core",
@@ -1149,10 +1168,11 @@ class ExecuteSecurityAuditView(LoginRequiredMixin, TenantRequiredMixin, View):
         ]
 
 
-class ExecutePerformanceAuditView(LoginRequiredMixin, TenantRequiredMixin, View):
-    """View para executar auditoria focada em performance"""
+class ExecutePerformanceAuditView(LoginRequiredMixin, TenantRequiredMixin, AIAuditorMixin, View):
+    """View para executar auditoria focada em performance."""
 
-    def post(self, request, *args, **kwargs):
+    def post(self, request, *args, **kwargs):  # noqa: ARG002
+        """Handle POST request for performance audit."""
         try:
             tenant = get_current_tenant(request)
             if not tenant:
@@ -1194,16 +1214,17 @@ class ExecutePerformanceAuditView(LoginRequiredMixin, TenantRequiredMixin, View)
                     "session_id": session.id,
                     "total_issues": session.total_issues,
                     "performance_improvements": session.high_issues + session.medium_issues,
-                }
+                },
             )
 
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             return JsonResponse(
-                {"success": False, "error": f"Erro ao executar auditoria de performance: {str(e)}"}, status=500
+                {"success": False, "error": f"Erro ao executar auditoria de performance: {e!s}"},
+                status=500,
             )
 
-    def analyze_performance_comprehensive(self, session):
-        """Análise completa de performance"""
+    def analyze_performance_comprehensive(self, session):  # noqa: ARG002
+        """Análise completa de performance."""
         return [
             {
                 "app_name": "clientes",
@@ -1232,8 +1253,8 @@ class ExecutePerformanceAuditView(LoginRequiredMixin, TenantRequiredMixin, View)
         ]
 
 
-class SessionReportView(LoginRequiredMixin, TenantRequiredMixin, PageTitleMixin, DetailView):
-    """View para exibir relatório detalhado da sessão"""
+class SessionReportView(LoginRequiredMixin, TenantRequiredMixin, AIAuditorMixin, PageTitleMixin, DetailView):
+    """View para exibir relatório detalhado da sessão."""
 
     model = AuditSession
     template_name = "ai_auditor/session_report.html"
@@ -1257,7 +1278,7 @@ class SessionReportView(LoginRequiredMixin, TenantRequiredMixin, PageTitleMixin,
         return context
 
     def generate_detailed_report(self, session):
-        """Gera relatório detalhado da sessão"""
+        """Gera relatório detalhado da sessão."""
         issues = CodeIssue.objects.filter(session=session)
 
         return {
@@ -1291,7 +1312,7 @@ class SessionReportView(LoginRequiredMixin, TenantRequiredMixin, PageTitleMixin,
                     "title": "Problemas Críticos",
                     "description": f"{critical_count} problemas críticos precisam de correção imediata",
                     "action": "Revisar e corrigir problemas de segurança críticos",
-                }
+                },
             )
 
         auto_fix_count = issues.filter(auto_fixable=True).count()
@@ -1302,13 +1323,13 @@ class SessionReportView(LoginRequiredMixin, TenantRequiredMixin, PageTitleMixin,
                     "title": "Correções Automáticas",
                     "description": f"{auto_fix_count} problemas podem ser corrigidos automaticamente",
                     "action": "Executar correções automáticas disponíveis",
-                }
+                },
             )
 
         return recommendations
 
 
-class CodeIssueDetailView(LoginRequiredMixin, TenantRequiredMixin, PageTitleMixin, DetailView):
+class CodeIssueDetailView(LoginRequiredMixin, TenantRequiredMixin, AIAuditorMixin, PageTitleMixin, DetailView):
     """View para exibir detalhes de um problema específico"""
 
     model = CodeIssue
@@ -1323,10 +1344,11 @@ class CodeIssueDetailView(LoginRequiredMixin, TenantRequiredMixin, PageTitleMixi
         return CodeIssue.objects.none()
 
 
-class AutoFixIssueView(LoginRequiredMixin, TenantRequiredMixin, View):
-    """View para aplicar correção automática em um problema"""
+class AutoFixIssueView(LoginRequiredMixin, TenantRequiredMixin, AIAuditorMixin, View):
+    """View para aplicar correção automática em um problema."""
 
-    def post(self, request, pk, *args, **kwargs):
+    def post(self, request, pk, *args, **kwargs):  # noqa: ARG002
+        """Handle POST request to apply automatic fix to an issue."""
         try:
             tenant = get_current_tenant(request)
             if not tenant:
@@ -1336,7 +1358,8 @@ class AutoFixIssueView(LoginRequiredMixin, TenantRequiredMixin, View):
 
             if not issue.auto_fixable:
                 return JsonResponse(
-                    {"success": False, "error": "Este problema não pode ser corrigido automaticamente"}, status=400
+                    {"success": False, "error": "Este problema não pode ser corrigido automaticamente"},
+                    status=400,
                 )
 
             # Simular aplicação da correção
@@ -1347,26 +1370,24 @@ class AutoFixIssueView(LoginRequiredMixin, TenantRequiredMixin, View):
                 issue.save()
 
                 return JsonResponse({"success": True, "message": "Correção aplicada com sucesso"})
-            else:
-                return JsonResponse({"success": False, "error": "Falha ao aplicar correção"}, status=500)
+            return JsonResponse({"success": False, "error": "Falha ao aplicar correção"}, status=500)
 
-        except Exception as e:
-            return JsonResponse({"success": False, "error": f"Erro ao aplicar correção: {str(e)}"}, status=500)
+        except Exception as e:  # noqa: BLE001
+            return JsonResponse({"success": False, "error": f"Erro ao aplicar correção: {e!s}"}, status=500)
 
-    def apply_fix(self, issue):
-        """Aplica a correção automática (simulação)"""
+    def apply_fix(self, issue):  # noqa: ARG002
+        """Aplica a correção automática (simulação)."""
         # Em uma implementação real, aqui seria feita a modificação do arquivo
         # Por enquanto, apenas simular o sucesso
         return True
 
     def analyze_security(self, app_path):
-        """Análise detalhada de segurança"""
+        """Análise detalhada de segurança."""
         security_issues = []
 
         for py_file in app_path.glob("**/*.py"):
             try:
-                with open(py_file, encoding="utf-8") as f:
-                    content = f.read()
+                content = py_file.read_text(encoding="utf-8")
 
                 # Verificar vulnerabilidades específicas
                 security_issues.extend(self.check_xss_vulnerabilities(py_file, content))
@@ -1374,13 +1395,13 @@ class AutoFixIssueView(LoginRequiredMixin, TenantRequiredMixin, View):
                 security_issues.extend(self.check_authentication_issues(py_file, content))
                 security_issues.extend(self.check_permission_issues(py_file, content))
 
-            except Exception:
+            except Exception:  # noqa: BLE001, S112
                 continue
 
         return security_issues
 
     def check_xss_vulnerabilities(self, file_path, content):
-        """Verifica vulnerabilidades XSS"""
+        """Verifica vulnerabilidades XSS."""
         issues = []
         lines = content.split("\n")
 
@@ -1399,31 +1420,30 @@ class AutoFixIssueView(LoginRequiredMixin, TenantRequiredMixin, View):
                         "recommendation": "Validar e sanitizar dados antes de usar |safe",
                         "code_snippet": line.strip(),
                         "auto_fixable": False,
-                    }
+                    },
                 )
 
         return issues
 
     def analyze_performance_detailed(self, app_path):
-        """Análise detalhada de performance"""
+        """Análise detalhada de performance."""
         performance_issues = []
 
         for py_file in app_path.glob("**/*.py"):
             try:
-                with open(py_file, encoding="utf-8") as f:
-                    content = f.read()
+                content = py_file.read_text(encoding="utf-8")
 
                 performance_issues.extend(self.check_database_queries(py_file, content))
                 performance_issues.extend(self.check_caching_opportunities(py_file, content))
                 performance_issues.extend(self.check_expensive_operations(py_file, content))
 
-            except Exception:
+            except Exception:  # noqa: BLE001, S112
                 continue
 
         return performance_issues
 
     def check_database_queries(self, file_path, content):
-        """Verifica problemas nas consultas de banco"""
+        """Verifica problemas nas consultas de banco."""
         issues = []
         lines = content.split("\n")
 
@@ -1442,13 +1462,13 @@ class AutoFixIssueView(LoginRequiredMixin, TenantRequiredMixin, View):
                         "recommendation": "Use select_related() ou prefetch_related()",
                         "code_snippet": line.strip(),
                         "auto_fixable": False,
-                    }
+                    },
                 )
 
         return issues
 
     def generate_detailed_report(self, session):
-        """Gera relatório detalhado da auditoria"""
+        """Gera relatório detalhado da auditoria."""
         issues = CodeIssue.objects.filter(session=session)
 
         report = {
@@ -1481,19 +1501,23 @@ class AutoFixIssueView(LoginRequiredMixin, TenantRequiredMixin, View):
         return report
 
     def generate_recommendations(self, issues):
-        """Gera recomendações baseadas nos problemas encontrados"""
+        """Gera recomendações baseadas nos problemas encontrados."""
         recommendations = []
 
         critical_count = issues.filter(severity="critical").count()
         if critical_count > 0:
             recommendations.append(f"🚨 {critical_count} problemas críticos precisam de atenção imediata")
 
+        # Threshold constants for recommendations
+        security_threshold = 5
+        performance_threshold = 10
+
         security_count = issues.filter(issue_type="security").count()
-        if security_count > 5:
+        if security_count > security_threshold:
             recommendations.append(f"🔒 {security_count} problemas de segurança identificados - revisar políticas")
 
         performance_count = issues.filter(issue_type="performance").count()
-        if performance_count > 10:
+        if performance_count > performance_threshold:
             recommendations.append(f"⚡ {performance_count} problemas de performance - otimização necessária")
 
         auto_fix_count = issues.filter(auto_fixable=True).count()

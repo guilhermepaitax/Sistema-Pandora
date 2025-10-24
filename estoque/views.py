@@ -11,6 +11,7 @@ from django.shortcuts import get_object_or_404, redirect, render
 from django.utils import timezone
 from django.views.generic import DetailView, ListView
 
+from core.mixins import ModuleRequiredMixin
 from core.utils import get_current_tenant
 from funcionarios.models import Funcionario
 from funcionarios.models_estoque import ResponsabilidadeMaterial, SolicitacaoMaterial
@@ -24,15 +25,13 @@ from .models import Deposito, EstoqueSaldo, MovimentoEstoque
 
 def placeholder(request):
     return HttpResponse(
-        "Modulo estoque modernizado – Views web clássicas removidas. Use APIs / novas telas em desenvolvimento."
+        "Modulo estoque modernizado – Views web clássicas removidas. Use APIs / novas telas em desenvolvimento.",
     )
 
 
 @login_required
 def estoque_home(request):
-    """
-    View principal do módulo estoque - renderiza estoque_home.html
-    """
+    """View principal do módulo estoque - renderiza estoque_home.html"""
     # Obter tenant de forma segura usando função utilitária
     tenant = get_current_tenant(request)
 
@@ -54,16 +53,20 @@ def estoque_home(request):
             stats.update(
                 {
                     "materiais_funcionarios": ResponsabilidadeMaterial.objects.filter(
-                        funcionario__tenant=tenant, status="ATIVO"
+                        funcionario__tenant=tenant,
+                        status="ATIVO",
                     ).count(),
                     "funcionarios_com_material": ResponsabilidadeMaterial.objects.filter(
-                        funcionario__tenant=tenant, status="ATIVO"
+                        funcionario__tenant=tenant,
+                        status="ATIVO",
                     )
                     .values("funcionario")
                     .distinct()
                     .count(),
                     "materiais_em_atraso": ResponsabilidadeMaterial.objects.filter(
-                        funcionario__tenant=tenant, status="ATIVO", data_previsao_devolucao__lt=timezone.now().date()
+                        funcionario__tenant=tenant,
+                        status="ATIVO",
+                        data_previsao_devolucao__lt=timezone.now().date(),
                     ).count(),
                     "retiradas_hoje": MovimentoEstoque.objects.filter(
                         tenant=tenant,
@@ -72,13 +75,16 @@ def estoque_home(request):
                         solicitante_tipo__icontains="funcionario",
                     ).count(),
                     "devolucoes_hoje": MovimentoEstoque.objects.filter(
-                        tenant=tenant, tipo="DEVOLUCAO_FUNCIONARIO", data_movimento__date=timezone.now().date()
+                        tenant=tenant,
+                        tipo="DEVOLUCAO_FUNCIONARIO",
+                        data_movimento__date=timezone.now().date(),
                     ).count(),
                     "valor_materiais_funcionarios": ResponsabilidadeMaterial.objects.filter(
-                        funcionario__tenant=tenant, status="ATIVO"
+                        funcionario__tenant=tenant,
+                        status="ATIVO",
                     ).aggregate(total=Sum("valor_unitario"))["total"]
                     or 0,
-                }
+                },
             )
         except Exception as e:
             # Se houver qualquer erro, usar valores padrão e log do erro
@@ -91,7 +97,7 @@ def estoque_home(request):
                     "retiradas_hoje": 0,
                     "devolucoes_hoje": 0,
                     "valor_materiais_funcionarios": 0,
-                }
+                },
             )
     else:
         # Se não há tenant, usar valores padrão
@@ -103,7 +109,7 @@ def estoque_home(request):
                 "retiradas_hoje": 0,
                 "devolucoes_hoje": 0,
                 "valor_materiais_funcionarios": 0,
-            }
+            },
         )
 
     # Alertas e pendências
@@ -158,7 +164,8 @@ def controle_materiais_funcionarios(request):
         try:
             stats = {
                 "solicitacoes_pendentes": SolicitacaoMaterial.objects.filter(
-                    tenant=tenant, status__in=["PENDENTE", "EM_ANALISE"]
+                    tenant=tenant,
+                    status__in=["PENDENTE", "EM_ANALISE"],
                 ).count(),
                 "solicitacoes_mes": SolicitacaoMaterial.objects.filter(
                     tenant=tenant,
@@ -166,10 +173,13 @@ def controle_materiais_funcionarios(request):
                     data_solicitacao__year=timezone.now().year,
                 ).count(),
                 "materiais_responsabilidade": ResponsabilidadeMaterial.objects.filter(
-                    funcionario__tenant=tenant, status="ATIVO"
+                    funcionario__tenant=tenant,
+                    status="ATIVO",
                 ).count(),
                 "materiais_em_atraso": ResponsabilidadeMaterial.objects.filter(
-                    funcionario__tenant=tenant, status="ATIVO", data_previsao_devolucao__lt=timezone.now().date()
+                    funcionario__tenant=tenant,
+                    status="ATIVO",
+                    data_previsao_devolucao__lt=timezone.now().date(),
                 ).count(),
             }
         except Exception as e:
@@ -224,7 +234,7 @@ def retirada_rapida_material(request):
                 return redirect("estoque:retirada_rapida_material")
 
         except Exception as e:
-            messages.error(request, f"Erro ao processar retirada: {str(e)}")
+            messages.error(request, f"Erro ao processar retirada: {e!s}")
 
     # GET - mostrar formulário
     tenant = get_current_tenant(request)
@@ -263,7 +273,9 @@ def devolucao_material_funcionario(request):
                 for resp_id, quantidade in zip(responsabilidade_ids, quantidades_devolucao, strict=False):
                     if resp_id and quantidade:
                         responsabilidade = get_object_or_404(
-                            ResponsabilidadeMaterial, id=resp_id, funcionario=funcionario
+                            ResponsabilidadeMaterial,
+                            id=resp_id,
+                            funcionario=funcionario,
                         )
 
                         service.processar_devolucao(
@@ -277,7 +289,7 @@ def devolucao_material_funcionario(request):
                 return redirect("estoque:devolucao_material_funcionario")
 
         except Exception as e:
-            messages.error(request, f"Erro ao processar devolução: {str(e)}")
+            messages.error(request, f"Erro ao processar devolução: {e!s}")
 
     # GET - mostrar formulário
     tenant = get_current_tenant(request)
@@ -296,7 +308,8 @@ def ajax_responsabilidades_funcionario(request, funcionario_id):
         funcionario = get_object_or_404(Funcionario, id=funcionario_id, tenant=tenant)
 
         responsabilidades = ResponsabilidadeMaterial.objects.filter(
-            funcionario=funcionario, status="ATIVO"
+            funcionario=funcionario,
+            status="ATIVO",
         ).select_related("produto")
 
         data = [
@@ -305,12 +318,12 @@ def ajax_responsabilidades_funcionario(request, funcionario_id):
                 "produto_nome": resp.produto.nome,
                 "quantidade_atual": float(resp.quantidade_atual),
                 "valor_unitario": float(resp.valor_unitario),
-                "data_previsao": resp.data_previsao_devolucao.strftime("%d/%m/%Y")
-                if resp.data_previsao_devolucao
-                else "",
-                "em_atraso": resp.data_previsao_devolucao < timezone.now().date()
-                if resp.data_previsao_devolucao
-                else False,
+                "data_previsao": (
+                    resp.data_previsao_devolucao.strftime("%d/%m/%Y") if resp.data_previsao_devolucao else ""
+                ),
+                "em_atraso": (
+                    resp.data_previsao_devolucao < timezone.now().date() if resp.data_previsao_devolucao else False
+                ),
             }
             for resp in responsabilidades
         ]
@@ -376,7 +389,13 @@ def reserva_add(request):
 # =============================
 
 
-class EstoqueItemListView(UIPermissionsMixin, ListView):
+class EstoqueMixin(ModuleRequiredMixin):
+    """Mixin base para views de estoque."""
+
+    required_module = "estoque"
+
+
+class EstoqueItemListView(EstoqueMixin, UIPermissionsMixin, ListView):
     model = EstoqueSaldo
     template_name = "estoque/estoque_list.html"
     context_object_name = "itens_estoque"
@@ -409,7 +428,7 @@ class EstoqueItemListView(UIPermissionsMixin, ListView):
         return ctx
 
 
-class EstoqueItemDetailView(UIPermissionsMixin, DetailView):
+class EstoqueItemDetailView(EstoqueMixin, UIPermissionsMixin, DetailView):
     model = EstoqueSaldo
     template_name = "estoque/estoque_detail.html"
     context_object_name = "itemestoque"

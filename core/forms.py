@@ -10,7 +10,6 @@ regras de negócio.
 
 from __future__ import annotations
 
-import json
 from typing import Any, ClassVar
 
 from django import forms
@@ -20,7 +19,6 @@ from django.forms import DateInput
 from django.utils.translation import gettext_lazy as _
 
 from cadastros_gerais.models import ItemAuxiliar  # novo: para filtrar tipos de documentos aplicáveis
-from core.module_registry import get_all_module_choices  # central registry
 
 # Modelos importados
 from .models import (  # novo: modelos de versionamento
@@ -248,76 +246,9 @@ class TenantUserForm(BasePandoraForm):
         return instance
 
 
-class ModuleConfigurationForm(forms.Form):
-    """Habilitação e visual de módulos por Tenant (usa module_registry)."""
-
-    AVAILABLE_MODULES_CHOICES: ClassVar[list[tuple[str, str]]] = get_all_module_choices()
-
-    enabled_modules = forms.MultipleChoiceField(
-        choices=sorted(AVAILABLE_MODULES_CHOICES, key=lambda x: (x[1] or "")),
-        widget=forms.CheckboxSelectMultiple(attrs={"class": "custom-checkbox-list"}),
-        required=False,
-        label=_("Selecione os módulos para habilitar para esta empresa"),
-    )
-
-    def __init__(self, *args, **kwargs) -> None:  # noqa: ANN002, ANN003
-        """Configura initial e help_text conforme plano/tenant."""
-        self.tenant = kwargs.pop("tenant", None)
-        super().__init__(*args, **kwargs)
-        plan = self._resolve_plan()
-        existing = set(self._extract_existing_modules())
-        defaults = self._plan_defaults(plan)
-        essentials = set(getattr(Tenant, "ESSENTIAL_TENANT_MODULES", []))
-        # Para planos não CUSTOM: union de existentes + defaults + essenciais
-        initial = sorted(existing | defaults | essentials) if plan != "CUSTOM" else sorted(existing | essentials)
-        self.fields["enabled_modules"].initial = initial
-        self._apply_help_text(plan, defaults)
-
-    # ---- helpers ----
-    def _resolve_plan(self) -> str:
-        return getattr(self.tenant, "plano_assinatura", "BASIC") if self.tenant else "BASIC"
-
-    def _extract_existing_modules(self) -> list[str]:
-        data = getattr(self.tenant, "enabled_modules", None)
-        if not data:
-            return []
-        try:
-            if isinstance(data, str):
-                return json.loads(data)
-            if isinstance(data, dict):
-                return data.get("modules", []) or []
-        except (json.JSONDecodeError, TypeError):  # pragma: no cover
-            return []
-        return []
-
-    def _plan_defaults(self, plan: str) -> set[str]:
-        mapping = getattr(Tenant, "PLAN_DEFAULT_MODULES", {})
-        return set(mapping.get(plan, []))
-
-    def _apply_help_text(self, plan: str, defaults: set[str]) -> None:
-        field = self.fields.get("enabled_modules")
-        if not field:
-            return
-        if plan != "CUSTOM" and defaults:
-            field.help_text = (field.help_text or "") + f" Módulos do plano {plan} são fixos e aparecem marcados."
-        elif plan == "CUSTOM":
-            field.help_text = (
-                field.help_text or ""
-            ) + " Plano personalizado: selecione livremente os módulos necessários."
-
-    def save(self) -> None:
-        """Salva a lista de módulos habilitados no campo JSON do tenant."""
-        if not self.tenant:
-            msg = _("O tenant não foi fornecido para o formulário.")
-            raise TypeError(msg)
-        # Normalizar seleção + salvamento em formato canônico {'modules': [...]}.
-        selected_modules = list(dict.fromkeys(self.cleaned_data.get("enabled_modules", [])))
-        # Garantir essenciais presentes sempre
-        essentials = set(getattr(Tenant, "ESSENTIAL_TENANT_MODULES", []))
-        selected_modules = sorted(set(selected_modules) | essentials)
-        self.tenant.enabled_modules = {"modules": selected_modules}
-        # save() do modelo já aplicará defaults de plano se necessário
-        self.tenant.save(update_fields=["enabled_modules"])  # save parcial mantém demais campos
+"""
+Removida ModuleConfigurationForm: configuração de módulos centralizada no Wizard.
+"""
 
 
 class EmpresaDocumentoVersaoCreateForm(forms.Form):

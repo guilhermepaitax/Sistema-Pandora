@@ -10,20 +10,16 @@ console_command = 'python manage.py shell'
 
 [build]
 
-# [deploy]
-#  Desabilitado release_command enquanto usamos SQLite em volume, pois o release
-#  normalmente não monta volumes. As migrações rodam no entrypoint com o volume montado.
-#  release_command = 'python manage.py migrate --noinput'
+
 
 [env]
-  # Nosso entrypoint expõe 8080 por padrão; manter consistente
+  # Porta usada pelo entrypoint/Gunicorn
   PORT = '8080'
-  # Usa Gunicorn via entrypoint (evita burlar migrações/superuser)
   USE_GUNICORN = '1'
-  # Usar SQLite temporário no volume persistente
-  PANDORA_DB_FILE = '/data/db.sqlite3'
-  # Permitir SQLite com DEBUG=False (temporário)
-  ALLOW_SQLITE_PROD = '1'
+  GUNICORN_WORKERS = '1'
+  MIGRATION_MAX_RETRIES = '1'
+  # Migrações rodam no release_command; evita duplicar no entrypoint
+  SKIP_STARTUP_MIGRATIONS = '1'
 
 #[processes]
 # Não definimos processos customizados para não pular o entrypoint.sh
@@ -32,14 +28,14 @@ console_command = 'python manage.py shell'
 [http_service]
   internal_port = 8080
   force_https = true
-  auto_stop_machines = 'stop'
+  auto_stop_machines = 'off'        # não parar automaticamente durante migrações
   auto_start_machines = true
-  min_machines_running = 0
+  min_machines_running = 1          # manter 1 máquina ativa
   # processes = ['app']
 
 [[vm]]
   # Reduz para 256MB para economizar custo; ajuste se faltar memória
-  memory = '256mb'
+  memory = '512mb'
   cpu_kind = 'shared'
   cpus = 1
 
@@ -48,7 +44,9 @@ console_command = 'python manage.py shell'
   guest_path = '/app/staticfiles_collected'
   url_prefix = '/static/'
 
-# Volume persistente para dados (ex.: SQLite em produção temporária)
-[[mounts]]
-  source = "data"
-  destination = "/data"
+
+[experimental]
+  private_network = true
+
+
+

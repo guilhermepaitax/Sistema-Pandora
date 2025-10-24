@@ -16,7 +16,14 @@ def test_portal_menu_whitelist(settings, client):
     from core.models import Tenant, TenantUser
 
     tenant = Tenant.objects.create(
-        nome="Tmenu", slug="tmenu", enabled_modules='["documentos","clientes","notifications"]'
+        nome="Tmenu",
+        slug="tmenu",
+        enabled_modules={
+            "modules": ["documentos", "clientes", "notifications"],
+            "documentos": {"enabled": True},
+            "clientes": {"enabled": False},
+            "notifications": {"enabled": True},
+        },
     )
     # Criar vínculo TenantUser para fallback de get_current_tenant
     TenantUser.objects.create(tenant=tenant, user=user, is_tenant_admin=True)

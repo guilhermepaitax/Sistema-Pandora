@@ -10,6 +10,7 @@ from django.utils import timezone
 from django.utils.translation import gettext_lazy as _
 from django.views.generic import CreateView, DeleteView, DetailView, ListView, UpdateView
 
+from core.mixins import ModuleRequiredMixin
 from core.utils import get_current_tenant
 
 from .forms import AprovacaoForm
@@ -18,9 +19,7 @@ from .models import Aprovacao
 
 @login_required
 def aprovacoes_home(request):
-    """
-    View para o dashboard de Aprovações, mostrando estatísticas e dados relevantes.
-    """
+    """View para o dashboard de Aprovações, mostrando estatísticas e dados relevantes."""
     template_name = "aprovacoes/aprovacoes_home.html"
     tenant = get_current_tenant(request)
 
@@ -37,7 +36,13 @@ def aprovacoes_home(request):
     return render(request, template_name, context)
 
 
-class AprovacoesListView(ListView):
+class AprovacoesM(ModuleRequiredMixin):
+    """Mixin base para views de aprovações."""
+
+    required_module = "aprovacoes"
+
+
+class AprovacoesListView(AprovacoesM, ListView):
     model = Aprovacao
     template_name = "aprovacoes/aprovacoes_list_ultra_modern.html"
     context_object_name = "aprovacoes_list"
@@ -54,7 +59,7 @@ class AprovacoesListView(ListView):
                 | Q(descricao__icontains=search)
                 | Q(solicitante__username__icontains=search)
                 | Q(solicitante__first_name__icontains=search)
-                | Q(solicitante__last_name__icontains=search)
+                | Q(solicitante__last_name__icontains=search),
             )
 
         # Filtro por status
@@ -98,12 +103,12 @@ class AprovacoesListView(ListView):
                     "tipo": self.request.GET.get("tipo", ""),
                     "prioridade": self.request.GET.get("prioridade", ""),
                 },
-            }
+            },
         )
         return context
 
 
-class AprovacoesDetailView(DetailView):
+class AprovacoesDetailView(AprovacoesM, DetailView):
     model = Aprovacao
     template_name = "aprovacoes/aprovacoes_detail_ultra_modern.html"
     context_object_name = "aprovacao"
@@ -124,12 +129,12 @@ class AprovacoesDetailView(DetailView):
                 "edit_url": "aprovacoes:aprovacoes_update",
                 "delete_url": "aprovacoes:aprovacoes_delete",
                 "list_url": "aprovacoes:aprovacoes_list",
-            }
+            },
         )
         return context
 
 
-class AprovacoesCreateView(CreateView):
+class AprovacoesCreateView(AprovacoesM, CreateView):
     model = Aprovacao
     form_class = AprovacaoForm
     template_name = "aprovacoes/aprovacoes_form_ultra_modern.html"
@@ -149,7 +154,7 @@ class AprovacoesCreateView(CreateView):
                 "form_title": "Adicionar Aprovação",
                 "submit_text": "Salvar Aprovação",
                 "cancel_url": "aprovacoes:aprovacoes_list",
-            }
+            },
         )
         return context
 
@@ -158,7 +163,7 @@ class AprovacoesCreateView(CreateView):
         return super().form_valid(form)
 
 
-class AprovacoesUpdateView(UpdateView):
+class AprovacoesUpdateView(AprovacoesM, UpdateView):
     model = Aprovacao
     form_class = AprovacaoForm
     template_name = "aprovacoes/aprovacoes_form_ultra_modern.html"
@@ -183,7 +188,7 @@ class AprovacoesUpdateView(UpdateView):
                 "form_title": "Editar Aprovação",
                 "submit_text": "Salvar Alterações",
                 "cancel_url": "aprovacoes:aprovacoes_list",
-            }
+            },
         )
         return context
 
@@ -192,7 +197,7 @@ class AprovacoesUpdateView(UpdateView):
         return super().form_valid(form)
 
 
-class AprovacoesDeleteView(DeleteView):
+class AprovacoesDeleteView(AprovacoesM, DeleteView):
     model = Aprovacao
     template_name = "aprovacoes/aprovacoes_confirm_delete_ultra_modern.html"
     success_url = reverse_lazy("aprovacoes:aprovacoes_list")
@@ -213,7 +218,7 @@ class AprovacoesDeleteView(DeleteView):
                     },
                     {"name": "Excluir", "url": "", "active": True},
                 ],
-            }
+            },
         )
         return context
 
@@ -238,10 +243,10 @@ def aprovar_aprovacao(request, pk):
                     "success": True,
                     "message": "Aprovação aprovada com sucesso!",
                     "new_status": aprovacao.get_status_display(),
-                }
+                },
             )
         except Exception as e:
-            return JsonResponse({"success": False, "message": f"Erro ao aprovar: {str(e)}"})
+            return JsonResponse({"success": False, "message": f"Erro ao aprovar: {e!s}"})
 
     return JsonResponse({"success": False, "message": "Método não permitido"})
 
@@ -261,9 +266,9 @@ def rejeitar_aprovacao(request, pk):
                     "success": True,
                     "message": "Aprovação rejeitada com sucesso!",
                     "new_status": aprovacao.get_status_display(),
-                }
+                },
             )
         except Exception as e:
-            return JsonResponse({"success": False, "message": f"Erro ao rejeitar: {str(e)}"})
+            return JsonResponse({"success": False, "message": f"Erro ao rejeitar: {e!s}"})
 
     return JsonResponse({"success": False, "message": "Método não permitido"})

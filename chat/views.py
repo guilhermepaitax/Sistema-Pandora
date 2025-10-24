@@ -19,6 +19,7 @@ from django.utils.translation import gettext_lazy as _
 from django.views.decorators.csrf import csrf_exempt
 from django.views.generic import CreateView, DeleteView, DetailView, ListView, UpdateView
 
+from core.mixins import ModuleRequiredMixin
 from core.models import CustomUser
 from core.utils import get_current_tenant
 
@@ -81,18 +82,21 @@ def chat_home(request):
     total_conversas = conversas_qs.count()
     favoritas = ConversaFavorita.objects.filter(usuario=user, conversa__tenant=tenant).count()
     mensagens_24h = Mensagem.objects.filter(
-        tenant=tenant, conversa__participantes=user, created_at__gte=timezone.now() - timedelta(hours=24)
+        tenant=tenant,
+        conversa__participantes=user,
+        created_at__gte=timezone.now() - timedelta(hours=24),
     ).count()
     fixadas = MensagemFixada.objects.filter(conversa__tenant=tenant, conversa__participantes=user).count()
     favoritas_ids = list(
         _ConversasFavoritas := ConversaFavorita.objects.filter(usuario=user, conversa__tenant=tenant).values_list(
-            "conversa_id", flat=True
-        )
+            "conversa_id",
+            flat=True,
+        ),
     )
     fixadas_conversas_ids = list(
         MensagemFixada.objects.filter(conversa__tenant=tenant, conversa__participantes=user)
         .values_list("conversa_id", flat=True)
-        .distinct()
+        .distinct(),
     )
 
     context = {
@@ -113,7 +117,13 @@ def chat_home(request):
     return render(request, "chat/chat_home.html", context)
 
 
-class ConversaListView(LoginRequiredMixin, ListView):
+class ChatMixin(ModuleRequiredMixin):
+    """Mixin base para views de chat."""
+
+    required_module = "chat"
+
+
+class ConversaListView(LoginRequiredMixin, ChatMixin, ListView):
     """Lista de conversas do usuário"""
 
     model = Conversa
@@ -137,7 +147,7 @@ class ConversaListView(LoginRequiredMixin, ListView):
         search = self.request.GET.get("search")
         if search:
             queryset = queryset.filter(
-                Q(titulo__icontains=search) | Q(participantes__username__icontains=search)
+                Q(titulo__icontains=search) | Q(participantes__username__icontains=search),
             ).distinct()
         tipo = self.request.GET.get("tipo")
         if tipo:
@@ -164,7 +174,7 @@ class ConversaListView(LoginRequiredMixin, ListView):
                 "can_edit": True,
                 "can_delete": True,
                 "add_url": reverse("chat:conversa_create"),
-            }
+            },
         )
         if tenant:
             total_conversas = Conversa.objects.filter(tenant=tenant, participantes=user, status="ativa").count()
@@ -174,7 +184,10 @@ class ConversaListView(LoginRequiredMixin, ListView):
                 .count()
             )
             conversas_recentes = Conversa.objects.filter(
-                tenant=tenant, participantes=user, status="ativa", created_at__gte=timezone.now() - timedelta(days=7)
+                tenant=tenant,
+                participantes=user,
+                status="ativa",
+                created_at__gte=timezone.now() - timedelta(days=7),
             ).count()
             context.update(
                 {
@@ -183,12 +196,12 @@ class ConversaListView(LoginRequiredMixin, ListView):
                     "inactive_count": 0,
                     "recent_count": conversas_recentes,
                     "unread_count": total_mensagens_nao_lidas,
-                }
+                },
             )
         return context
 
 
-class ConversaDetailView(LoginRequiredMixin, DetailView):
+class ConversaDetailView(LoginRequiredMixin, ChatMixin, DetailView):
     """Detalhes de uma conversa específica"""
 
     model = Conversa
@@ -232,12 +245,12 @@ class ConversaDetailView(LoginRequiredMixin, DetailView):
                 "participantes": conversa.participantes.all(),
                 "total_mensagens": mensagens.count(),
                 "is_admin": user == conversa.criador,
-            }
+            },
         )
         return context
 
 
-class ConversaCreateView(LoginRequiredMixin, CreateView):
+class ConversaCreateView(LoginRequiredMixin, ChatMixin, CreateView):
     """Criar nova conversa"""
 
     model = Conversa
@@ -275,12 +288,12 @@ class ConversaCreateView(LoginRequiredMixin, CreateView):
                     {"title": "Conversas", "url": reverse("chat:conversa_list")},
                     {"title": "Nova Conversa", "url": None, "active": True},
                 ],
-            }
+            },
         )
         return context
 
 
-class ConversaUpdateView(LoginRequiredMixin, UpdateView):
+class ConversaUpdateView(LoginRequiredMixin, ChatMixin, UpdateView):
     """Editar conversa"""
 
     model = Conversa
@@ -311,7 +324,7 @@ class ConversaUpdateView(LoginRequiredMixin, UpdateView):
                     {"title": "Conversas", "url": reverse("chat:conversa_list")},
                     {"title": "Editar", "url": None, "active": True},
                 ],
-            }
+            },
         )
         return context
 
@@ -320,7 +333,7 @@ class ConversaUpdateView(LoginRequiredMixin, UpdateView):
         return super().form_valid(form)
 
 
-class ConversaDeleteView(LoginRequiredMixin, DeleteView):
+class ConversaDeleteView(LoginRequiredMixin, ChatMixin, DeleteView):
     """Excluir conversa"""
 
     model = Conversa
@@ -351,7 +364,7 @@ class ConversaDeleteView(LoginRequiredMixin, DeleteView):
                     {"title": "Conversas", "url": reverse("chat:conversa_list")},
                     {"title": "Excluir", "url": None, "active": True},
                 ],
-            }
+            },
         )
         return context
 
@@ -362,11 +375,11 @@ class ConversaDeleteView(LoginRequiredMixin, DeleteView):
             messages.success(self.request, f'Conversa "{titulo}" excluída com sucesso!')
             return response
         except Exception as e:
-            messages.error(self.request, f'Não foi possível excluir a conversa "{titulo}". Erro: {str(e)}')
+            messages.error(self.request, f'Não foi possível excluir a conversa "{titulo}". Erro: {e!s}')
             return redirect("chat:conversa_list")
 
 
-class MensagemCreateView(LoginRequiredMixin, CreateView):
+class MensagemCreateView(LoginRequiredMixin, ChatMixin, CreateView):
     """Enviar nova mensagem"""
 
     model = Mensagem
@@ -499,7 +512,11 @@ def api_enviar_mensagem(request):
 
         # Criar a mensagem
         mensagem = Mensagem.objects.create(
-            tenant=tenant, conversa=conversa, remetente=user, conteudo=conteudo, resposta_para=resposta_para
+            tenant=tenant,
+            conversa=conversa,
+            remetente=user,
+            conteudo=conteudo,
+            resposta_para=resposta_para,
         )
 
         # Atualizar última atividade da conversa
@@ -510,13 +527,13 @@ def api_enviar_mensagem(request):
         LogMensagem.objects.create(mensagem=mensagem, usuario=user, acao="Mensagem enviada via API.")
 
         return JsonResponse(
-            {"status": "success", "message": "Mensagem enviada com sucesso", "mensagem_id": mensagem.id}
+            {"status": "success", "message": "Mensagem enviada com sucesso", "mensagem_id": mensagem.id},
         )
 
     except json.JSONDecodeError:
         return JsonResponse({"status": "error", "message": "JSON inválido"})
     except Exception as e:
-        logger.error(f"Erro ao enviar mensagem via API: {str(e)}")
+        logger.error(f"Erro ao enviar mensagem via API: {e!s}")
         return JsonResponse({"status": "error", "message": "Erro interno do servidor"})
 
 
@@ -554,7 +571,7 @@ def api_marcar_como_lida(request):
     except json.JSONDecodeError:
         return JsonResponse({"status": "error", "message": "JSON inválido"})
     except Exception as e:
-        logger.error(f"Erro ao marcar mensagem como lida: {str(e)}")
+        logger.error(f"Erro ao marcar mensagem como lida: {e!s}")
         return JsonResponse({"status": "error", "message": "Erro interno do servidor"})
 
 
@@ -570,7 +587,7 @@ def api_conversas_recentes(request):
     conversas = (
         Conversa.objects.filter(tenant=tenant, participantes=user, status="ativa")
         .annotate(
-            mensagens_nao_lidas=Count("mensagens", filter=Q(mensagens__lida=False) & ~Q(mensagens__remetente=user))
+            mensagens_nao_lidas=Count("mensagens", filter=Q(mensagens__lida=False) & ~Q(mensagens__remetente=user)),
         )
         .order_by("-ultima_atividade")[:10]
     )
@@ -585,18 +602,20 @@ def api_conversas_recentes(request):
                 "tipo": conversa.tipo,
                 "mensagens_nao_lidas": conversa.mensagens_nao_lidas,
                 "ultima_atividade": conversa.ultima_atividade.isoformat() if conversa.ultima_atividade else None,
-                "ultima_mensagem": {
-                    "conteudo": ultima_mensagem.conteudo[:50] + "..."
-                    if ultima_mensagem and len(ultima_mensagem.conteudo) > 50
-                    else ultima_mensagem.conteudo
+                "ultima_mensagem": (
+                    {
+                        "conteudo": (
+                            ultima_mensagem.conteudo[:50] + "..."
+                            if ultima_mensagem and len(ultima_mensagem.conteudo) > 50
+                            else ultima_mensagem.conteudo if ultima_mensagem else ""
+                        ),
+                        "remetente": ultima_mensagem.remetente.username if ultima_mensagem else "",
+                        "data": ultima_mensagem.created_at.isoformat() if ultima_mensagem else None,
+                    }
                     if ultima_mensagem
-                    else "",
-                    "remetente": ultima_mensagem.remetente.username if ultima_mensagem else "",
-                    "data": ultima_mensagem.created_at.isoformat() if ultima_mensagem else None,
-                }
-                if ultima_mensagem
-                else None,
-            }
+                    else None
+                ),
+            },
         )
 
     return JsonResponse({"status": "success", "conversas": conversas_data})
@@ -704,7 +723,7 @@ def api_conversa_mensagens(request, conversa_id):
                 "tipo": m.tipo,
                 "arquivo_url": m.arquivo.url if m.arquivo else None,
                 "arquivo_nome": m.get_nome_arquivo(),
-            }
+            },
         )
     return JsonResponse({"status": "success", "mensagens": list(reversed(mensagens)), "has_more": has_more})
 
@@ -766,7 +785,8 @@ def api_upload_arquivo(request):
     try:
         channel_layer = get_channel_layer()
         async_to_sync(channel_layer.group_send)(
-            f"chat_conversa_{conversa.id}", {"type": "chat.message", "event": "new_message", "mensagem": msg_dict}
+            f"chat_conversa_{conversa.id}",
+            {"type": "chat.message", "event": "new_message", "mensagem": msg_dict},
         )
     except Exception:
         pass

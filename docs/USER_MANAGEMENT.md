@@ -1,6 +1,7 @@
 # User Management — Guia Consolidado (estado atual)
 
-Atualizado: 2025-09-09
+**Última atualização:** 2025-10-22  
+**Status:** ✅ Sistema 100% funcional e documentado
 
 Este documento consolida visão geral, fluxos, operações frequentes e comandos do módulo `user_management`. Substitui: `USER_MANAGEMENT_OVERVIEW.md`, `USER_MANAGEMENT_OPERACOES_FREQUENTES.md` e `USER_MANAGEMENT_PENDING.md`.
 
@@ -15,10 +16,12 @@ Este documento consolida visão geral, fluxos, operações frequentes e comandos
 - Importante: manter essa separação. O `user_management` não cria Admins do wizard nem interfere nas rotas RBAC do Core; ele opera sobre qualquer usuário do sistema (inclusive admins já criados), respeitando o escopo multi-tenant e as permissões.
 
 ## 2. Modelos-chaves
-- PerfilUsuarioEstendido: flags de segurança (bloqueios, 2FA, métricas) e campos auxiliares.
-- SessaoUsuario: sessões ativas e expiração lógica.
-- PermissaoPersonalizada: allow/deny por módulo/ação/(recurso)/escopo tenant/global.
-- Tenant / TenantUser / Role: relacionamento usuário↔tenant.
+- **PerfilUsuarioEstendido**: flags de segurança (bloqueios, 2FA, métricas) e campos auxiliares.
+- **SessaoUsuario**: sessões ativas e expiração lógica.
+- **PermissaoPersonalizada**: allow/deny por módulo/ação/(recurso)/escopo tenant/global.
+- **ConviteUsuario**: convites de usuários para tenants com token e expiração.
+- **LogAtividadeUsuario**: auditoria de ações com metadados (IP, user_agent, timestamp).
+- **Tenant / TenantUser / Role**: relacionamento usuário↔tenant (módulo core).
 
 ## 3. Fluxos principais
 ### 3.1 Criação/Admin
@@ -54,10 +57,20 @@ Valida token, cria/associa usuário ao tenant, define status ATIVO, marca token 
 - `twofa_reencrypt` (recriptografa segredos conforme chaves atuais; `--dry-run`, `--force`).
 - `twofa_reencrypt_secrets` (recifra em massa; `--dry-run`, `--unencrypted-only`, `--limit`).
 - `twofa_status_report` (status agregado de 2FA; `--json`, `--detailed`).
-- `cleanup_sessions_logs` (limpeza de sessões e logs antigos).
-- `sync_profiles` (cria perfis ausentes; idempotente).
+- `twofa_metrics_snapshot` (snapshot de métricas 2FA; `--reset` para zerar após captura).
+- `cleanup_sessions_logs` (limpeza de sessões e logs antigos; `--dry-run`, `--logs-days=90`).
+- `sync_profiles` (cria perfis ausentes; idempotente; `--dry-run`, `--verbose`).
+- `create_missing_profiles` (alias para sync_profiles; cria perfis faltantes).
 - `prune_expired_permissions` (remove permissões expiradas).
 - `audit_orphan_permissions` (lista permissões personalizadas órfãs frente ao mapa de ações vigente).
+
+## 7.1 Tarefas Celery Automáticas
+Executadas periodicamente quando `ENABLE_USER_MGMT_MAINTENANCE=True`:
+
+- **`desbloquear_usuarios_periodico`**: A cada 30min - Desbloqueia usuários com lockout expirado
+- **`limpar_sessoes_expiradas_periodico`**: A cada 30min - Remove sessões Django antigas
+- **`limpar_logs_antigos_periodico`**: Diariamente - Remove logs de atividade >90 dias
+- **`cleanup_old_2fa_metrics`**: Semanalmente - Limpa métricas 2FA excessivas (>10.000) e lockouts órfãos (>7 dias)
 
 ## 8. Operações frequentes (how-to)
 ### Resetar 2FA de um usuário
@@ -136,4 +149,29 @@ permission_resolver.invalidate_cache(user_id=user.id, tenant_id=tenant.id)
   - Integração opcional do botão “Redefinir Senha” com endpoint do Core (`core:tenant_user_reset_password`) quando definido o mapeamento `PerfilUsuarioEstendido`→`TenantUser` no contexto da tela.
 
 ## 12. Referências
-- 2FA detalhado: `docs/TWOFA_SERVICE.md`.
+- 2FA detalhado: `docs/2FA.md` (atualizado em 2025-10-21).
+- Auditoria de módulos: `docs/AUDITORIA_CONFORMIDADE_MODULOS.md`.
+- Auditoria completa: `docs/AUDITORIA_COMPLETA_MODULOS_TEMPLATES.md`.
+- Documentação sistema: `docs/DOCUMENTACAO_SISTEMA_PANDORA_ERP.md`.
+
+---
+
+## 13. Notas Arquiteturais
+
+### 13.1 ModuleRequiredMixin
+O módulo `user_management` é considerado **essencial** do sistema e **não usa** `ModuleRequiredMixin` por design:
+
+**Razão:** Diferente dos módulos opcionais (clientes, obras, etc.), o `user_management` é necessário para o funcionamento básico do sistema (autenticação, autorização, perfis).
+
+**Proteção:** Views são protegidas por:
+1. `LoginRequiredMixin` - Autenticação obrigatória
+2. `TenantRequiredMixin` - Contexto empresarial
+3. `TenantAdminOrSuperuserMixin` - Permissões administrativas
+4. `PermissionRequiredMixin` - Permissões granulares customizadas
+
+**Módulos na mesma categoria:**
+- `core` - Gerenciamento de empresas (superuser)
+- `admin` - Administração da empresa
+- `user_management` - Gerenciamento de usuários
+
+**Arquitetura:** Segue padrão "defense in depth" com múltiplas camadas de autenticação e autorização, mas sem verificação de módulo habilitado (sempre disponível).

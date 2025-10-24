@@ -60,7 +60,7 @@ Todas as mudanças notáveis neste projeto serão documentadas aqui.
 ### Changed
 - Consolidação de documentação de Gestão de Usuários em `docs/USER_MANAGEMENT.md`.
 - Consolidação de Permission Resolver em `docs/PERMISSION_RESOLVER.md`.
-- Plano de modernização de Prontuários movido para `docs/legacy/PRONTUARIOS_MODERNIZACAO_PLAN.md`; visão atual em `docs/PRONTUARIOS_ARQUITETURA.md`.
+- Plano de modernização de Prontuários removido; visão atual mantida em `docs/PRONTUARIOS_ARQUITETURA.md` com status de implementação.
 
 ### Removed
 - Remoção de documentos obsoletos consolidados (detalhes em `docs/_DELETION_LOG.md`).

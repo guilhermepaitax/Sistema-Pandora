@@ -9,6 +9,7 @@ import os
 import warnings
 from datetime import timedelta
 from pathlib import Path
+from typing import Any
 
 # Aplica monkeypatches globais cedo sem depender de análise estática
 importlib.import_module("core.monkeypatches")
@@ -265,7 +266,7 @@ else:
 _db_file_env = os.environ.get("PANDORA_DB_FILE", "db.sqlite3")
 _sqlite_name = _db_file_env if _db_file_env.startswith("/") else (BASE_DIR / _db_file_env)
 
-DATABASES = {
+DATABASES: dict[str, dict[str, Any]] = {
     "default": {
         "ENGINE": "django.db.backends.sqlite3",
         # Permite redefinir o arquivo do banco via variável de ambiente (ex: PANDORA_DB_FILE=db_new.sqlite3)
@@ -284,6 +285,7 @@ if _db_url:
 
     try:
         _djdb = importlib.import_module("dj_database_url")
+        # parse retorna dict[str, Any]
         DATABASES["default"] = _djdb.parse(_db_url, conn_max_age=600, ssl_require=True)
     except ModuleNotFoundError:
         # Fallback manual se dj_database_url não estiver instalado
@@ -976,6 +978,10 @@ CELERY_BEAT_SCHEDULE = {
             "user_mgmt-limpar-logs-antigos": {
                 "task": "user_management.tasks.limpar_logs_antigos_periodico",
                 "schedule": timedelta(hours=24),
+            },
+            "user_mgmt-cleanup-2fa-metrics": {
+                "task": "user_management.cleanup_old_2fa_metrics",
+                "schedule": timedelta(days=7),
             },
         }
         if os.environ.get("ENABLE_USER_MGMT_MAINTENANCE", "True") == "True"

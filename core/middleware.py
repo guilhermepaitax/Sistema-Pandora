@@ -4,14 +4,15 @@ from __future__ import annotations
 
 import contextlib
 import logging
+from http import HTTPStatus
 from typing import TYPE_CHECKING, ClassVar
 
 from django.apps import apps
 from django.conf import settings
 from django.contrib import messages
 from django.db import DatabaseError, IntegrityError, OperationalError
-from django.http import HttpRequest, HttpResponse, HttpResponseForbidden
-from django.shortcuts import redirect
+from django.http import HttpRequest, HttpResponse
+from django.shortcuts import redirect, render
 from django.urls import reverse
 from django.utils import timezone
 from django.utils.deprecation import MiddlewareMixin
@@ -94,6 +95,7 @@ MODULE_URL_MAPPING = {
     "/servicos/": "servicos",
     "/compras/": "compras",
     "/apropriacao/": "apropriacao",
+    "/mao_obra/": "mao_obra",
     "/financeiro/": "financeiro",
     # Estoque e Notifications: isentos de gating por padrão (legado/testes)
     # Mantém acesso mesmo sem habilitação explícita de módulo.
@@ -102,6 +104,7 @@ MODULE_URL_MAPPING = {
     "/relatorios/": "relatorios",
     "/bi/": "bi",
     "/agenda/": "agenda",
+    "/agendamentos/": "agendamentos",
     "/chat/": "chat",
     "/formularios/": "formularios",
     "/sst/": "sst",
@@ -357,7 +360,26 @@ class ModuleAccessMiddleware(MiddlewareMixin):
             "Acesso negado ao módulo '{module}' (motivo: {reason}).",
         ).format(module=target.capitalize(), reason=decision.reason)
         if getattr(settings, "FEATURE_MODULE_DENY_403", False):
-            resp = HttpResponseForbidden(deny_msg)
+            friendly_message = _(
+                (
+                    "Este módulo está desativado para sua empresa. "
+                    "Entre em contato com o administrador para solicitar acesso."
+                ),
+            )
+            context = {
+                "title": target.capitalize(),
+                "headline": _("Você não tem acesso a este módulo"),
+                "message": friendly_message,
+                "icon": "fa-lock",
+                "back_url": reverse("dashboard"),
+                "deny_reason": decision.reason,
+            }
+            resp = render(
+                request,
+                "core/module_unavailable.html",
+                context,
+                status=HTTPStatus.FORBIDDEN,
+            )
             resp["X-Deny-Reason"] = decision.reason
             resp["X-Deny-Module"] = target
             return resp

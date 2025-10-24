@@ -7,6 +7,7 @@ from django.utils.translation import gettext_lazy as _
 # relatorios/views.py
 from django.views.generic import CreateView, DeleteView, DetailView, ListView, UpdateView
 
+from core.mixins import ModuleRequiredMixin
 from core.utils import get_current_tenant
 
 from .forms import RelatorioForm  # CORRIGIDO para importar RelatorioForm (singular)
@@ -15,9 +16,7 @@ from .models import Relatorio  # CORRIGIDO para importar Relatorio (singular)
 
 @login_required
 def relatorios_home(request):
-    """
-    View para o dashboard de Relatórios, mostrando estatísticas e dados relevantes.
-    """
+    """View para o dashboard de Relatórios, mostrando estatísticas e dados relevantes."""
     template_name = "relatorios/relatorios_home.html"
     tenant = get_current_tenant(request)
 
@@ -35,20 +34,26 @@ def relatorios_home(request):
     return render(request, template_name, context)
 
 
-class RelatoriosListView(ListView):  # O nome da classe da View pode ser plural
+class RelatoriosMixin(ModuleRequiredMixin):
+    """Mixin base para views de relatórios."""
+
+    required_module = "relatorios"
+
+
+class RelatoriosListView(RelatoriosMixin, ListView):  # O nome da classe da View pode ser plural
     model = Relatorio  # CORRIGIDO para Relatorio (singular)
     template_name = "relatorios/relatorios_list_ultra_modern.html"
     context_object_name = "relatorios_list"
     paginate_by = 10
 
 
-class RelatoriosDetailView(DetailView):
+class RelatoriosDetailView(RelatoriosMixin, DetailView):
     model = Relatorio  # CORRIGIDO para Relatorio (singular)
     template_name = "relatorios/relatorios_detail_ultra_modern.html"
     context_object_name = "relatorio"  # Convenção: singular para o objeto de detalhe
 
 
-class RelatoriosCreateView(CreateView):
+class RelatoriosCreateView(RelatoriosMixin, CreateView):
     model = Relatorio  # CORRIGIDO para Relatorio (singular)
     form_class = RelatorioForm  # CORRIGIDO para RelatorioForm (singular)
     template_name = "relatorios/relatorios_form_ultra_modern.html"
@@ -60,7 +65,7 @@ class RelatoriosCreateView(CreateView):
         return context
 
 
-class RelatoriosUpdateView(UpdateView):
+class RelatoriosUpdateView(RelatoriosMixin, UpdateView):
     model = Relatorio  # CORRIGIDO para Relatorio (singular)
     form_class = RelatorioForm  # CORRIGIDO para RelatorioForm (singular)
     template_name = "relatorios/relatorios_form_ultra_modern.html"
@@ -72,7 +77,7 @@ class RelatoriosUpdateView(UpdateView):
         return context
 
 
-class RelatoriosDeleteView(DeleteView):
+class RelatoriosDeleteView(RelatoriosMixin, DeleteView):
     model = Relatorio  # CORRIGIDO para Relatorio (singular)
     template_name = "relatorios/relatorios_confirm_delete_ultra_modern.html"
     success_url = reverse_lazy("relatorios:relatorios_list")

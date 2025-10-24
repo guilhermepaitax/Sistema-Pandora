@@ -73,6 +73,17 @@ def devtools_manifest(_request: HttpRequest) -> HttpResponse:
     return HttpResponse(json.dumps(payload), content_type="application/json")
 
 
+def healthz(_request: HttpRequest) -> HttpResponse:
+    """Healthcheck leve.
+
+    Não toca no banco para ser extremamente barato. Para sinalizar readiness
+    pós-migração, rely no sentinel criado pelo entrypoint (opcional: poderia
+    validar se 'migrations_done' existe). Mantemos simples para evitar qualquer
+    alocação desnecessária em ambientes de memória reduzida.
+    """
+    return HttpResponse("ok", content_type="text/plain")
+
+
 urlpatterns = [
     path("django-admin/", admin.site.urls),
     # --- Página inicial redireciona para dashboard ---
@@ -81,6 +92,7 @@ urlpatterns = [
     path("dashboard/", dashboard, name="dashboard"),
     # Métricas Prometheus (opcional)
     path("metrics/", metrics_view, name="metrics"),
+    path("healthz", healthz, name="healthz"),
     # Evita 404 de sondas do DevTools em dev
     path(".well-known/appspecific/com.chrome.devtools.json", devtools_manifest),
     # --- Módulos ---

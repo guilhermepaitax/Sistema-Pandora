@@ -63,22 +63,29 @@
                 <nav class="sidebar-nav">
                     {% load menu_tags %}
                     {% render_sidebar_menu %}
+                    {% is_module_enabled 'documentos' as sidebar_has_documentos %}
+                    {% is_module_enabled 'portal_cliente' as sidebar_has_portal_cliente %}
+                    {% if sidebar_has_documentos or sidebar_has_portal_cliente %}
                     <ul class="nav flex-column mt-3">
+                        {% if sidebar_has_documentos %}
                         <li class="nav-item">
                             <a class="nav-link d-flex align-items-center" href="{% url 'documentos:documentos_home' %}">
                                 <i class="fas fa-file-alt me-2"></i>
                                 <span>Gestão de Documentos</span>
                             </a>
                         </li>
-                        <!-- ITEM TEMPORÁRIO - Portal do Cliente -->
+                        {% endif %}
+                        {% if sidebar_has_portal_cliente %}
                         <li class="nav-item">
                             <a class="nav-link d-flex align-items-center" href="{% url 'portal_cliente:dashboard' %}" style="background: linear-gradient(135deg, #28a745, #20c997); color: white; border-radius: 8px; margin: 0.25rem;">
                                 <i class="fas fa-user-circle me-2"></i>
-                                <span>🧪 Portal Cliente (TESTE)</span>
+                                <span>Portal Cliente</span>
                                 <span class="badge bg-light text-success ms-auto">NOVO</span>
                             </a>
                         </li>
+                        {% endif %}
                     </ul>
+                    {% endif %}
                 </nav>
                 
                 <div class="sidebar-footer">
@@ -152,10 +159,12 @@
                         <button class="quick-action-btn" title="Calculadora" id="calculator-toggle">
                             <i class="fas fa-calculator"></i>
                         </button>
-                        <!-- BOTÃO TEMPORÁRIO - Portal do Cliente -->
-                        <a href="{% url 'portal_cliente:dashboard' %}" class="quick-action-btn" title="Portal do Cliente (TESTE)" style="background: linear-gradient(135deg, #28a745, #20c997); color: white;">
+                        {% is_module_enabled 'portal_cliente' as quick_has_portal_cliente %}
+                        {% if quick_has_portal_cliente %}
+                        <a href="{% url 'portal_cliente:dashboard' %}" class="quick-action-btn" title="Portal do Cliente" style="background: linear-gradient(135deg, #28a745, #20c997); color: white;">
                             <i class="fas fa-user-circle"></i>
                         </a>
+                        {% endif %}
                     </div>
 
                     <div class="notifications-dropdown dropdown">

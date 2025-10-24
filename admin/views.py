@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import logging
 from datetime import timedelta
-from itertools import groupby
 from typing import TYPE_CHECKING, Any, ClassVar, TypedDict
 
 from django.contrib import messages
@@ -12,31 +11,30 @@ from django.contrib.auth import get_user_model
 from django.contrib.auth.decorators import login_required
 from django.contrib.auth.mixins import LoginRequiredMixin, UserPassesTestMixin
 from django.core.paginator import Paginator
-from django.db.models import Count, Q, QuerySet, Sum
-from django.http import Http404, HttpRequest, HttpResponse, HttpResponseRedirect
+from django.db.models import Count, QuerySet, Sum
 from django.shortcuts import redirect, render
 from django.urls import reverse, reverse_lazy
 from django.utils import timezone
 from django.utils.translation import gettext_lazy as _
-from django.views.generic import CreateView, ListView, TemplateView, UpdateView
+from django.views.generic import CreateView, TemplateView, UpdateView
 from rest_framework import permissions, viewsets
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from clientes.models import Cliente
 from core.models import Tenant, TenantUser
+from core.module_registry import MODULE_DEFINITIONS, MODULE_VISUAL
 from core.utils import get_current_tenant
 from financeiro.models import ContaPagar, ContaReceber
 from funcionarios.models import Funcionario
+from notifications.models import Notification
 from obras.models import Obra
 from orcamentos.models import Orcamento
 from produtos.models import Produto
 from user_management.models import PerfilUsuarioEstendido
 
 from .forms import (
-    SystemAlertForm,
     SystemConfigurationForm,
-    TenantConfigurationForm,
 )
 from .models import (
     AdminActivity,
@@ -58,6 +56,7 @@ from .serializers import (
 if TYPE_CHECKING:
     from django.db.models.query import QuerySet
     from django.forms import BaseModelForm
+    from django.http import HttpRequest, HttpResponse, HttpResponseRedirect
 
 User = get_user_model()
 logger = logging.getLogger(__name__)
@@ -105,14 +104,16 @@ def admin_home(request: HttpRequest) -> HttpResponse | HttpResponseRedirect:
         ).count()
 
         # Alertas e notificações
-        alertas_criticos = SystemAlert.objects.filter(
-            severity="critical",
-            status="open",
+        notificacoes_nao_lidas = Notification.objects.filter(
+            status="nao_lida",
         ).count()
-        alertas_pendentes = SystemAlert.objects.filter(status="open").count()
-        alertas_resolvidos_hoje = SystemAlert.objects.filter(
-            status="resolved",
-            resolved_at__date=timezone.now().date(),
+        notificacoes_criticas = Notification.objects.filter(
+            prioridade="critica",
+            status="nao_lida",
+        ).count()
+        notificacoes_lidas_hoje = Notification.objects.filter(
+            status="lida",
+            data_leitura__date=timezone.now().date(),
         ).count()
 
         # Atividades administrativas recentes
@@ -120,30 +121,32 @@ def admin_home(request: HttpRequest) -> HttpResponse | HttpResponseRedirect:
             "admin_user",
             "tenant",
         ).order_by(
-            "-created_at"
+            "-created_at",
         )[:10]
 
         # Métricas de performance
         performance_geral = 98.5  # Simulado - implementar cálculo real
         uptime_sistema = 99.9  # Simulado - implementar cálculo real
 
-        # Dados para gráficos
-        alertas_por_severidade = {
-            "critical": SystemAlert.objects.filter(severity="critical").count(),
-            "high": SystemAlert.objects.filter(severity="high").count(),
-            "medium": SystemAlert.objects.filter(severity="medium").count(),
-            "low": SystemAlert.objects.filter(severity="low").count(),
+        # Dados para gráficos - Notificações por prioridade
+        notificacoes_por_prioridade = {
+            "critica": Notification.objects.filter(prioridade="critica").count(),
+            "alta": Notification.objects.filter(prioridade="alta").count(),
+            "media": Notification.objects.filter(prioridade="media").count(),
+            "baixa": Notification.objects.filter(prioridade="baixa").count(),
         }
 
         context_specific = {
             "empresas_ativas": empresas_ativas,
             "usuarios_sistema": usuarios_sistema,
             "usuarios_ativos": usuarios_ativos,
-            "alertas_criticos": alertas_criticos,
-            "alertas_por_severidade": alertas_por_severidade,
+            "usuarios_empresa": usuarios_sistema,  # Para superuser, mostra total do sistema
+            "notificacoes_criticas": notificacoes_criticas,
+            "notificacoes_por_prioridade": notificacoes_por_prioridade,
             "performance_geral": performance_geral,
             "uptime_sistema": uptime_sistema,
             "can_manage_system": True,
+            "modulos_contratados": 0,  # Superuser gerencia múltiplos tenants
         }
 
     else:
@@ -165,20 +168,28 @@ def admin_home(request: HttpRequest) -> HttpResponse | HttpResponseRedirect:
             status="ativo",
         ).count()
 
-        # Alertas específicos da empresa
-        alertas_criticos = SystemAlert.objects.filter(
+        # Contagem real de módulos habilitados no tenant
+        enabled_modules_list = []
+        if isinstance(tenant.enabled_modules, dict):
+            enabled_modules_list = tenant.enabled_modules.get("modules", [])
+        elif isinstance(tenant.enabled_modules, list):
+            enabled_modules_list = tenant.enabled_modules
+        modulos_contratados = len(enabled_modules_list)
+
+        # Notificações específicas da empresa
+        notificacoes_nao_lidas = Notification.objects.filter(
             tenant=tenant,
-            severity="critical",
-            status="open",
+            status="nao_lida",
         ).count()
-        alertas_pendentes = SystemAlert.objects.filter(
+        notificacoes_criticas = Notification.objects.filter(
             tenant=tenant,
-            status="open",
+            prioridade="critica",
+            status="nao_lida",
         ).count()
-        alertas_resolvidos_hoje = SystemAlert.objects.filter(
+        notificacoes_lidas_hoje = Notification.objects.filter(
             tenant=tenant,
-            status="resolved",
-            resolved_at__date=timezone.now().date(),
+            status="lida",
+            data_leitura__date=timezone.now().date(),
         ).count()
 
         # Atividades da empresa
@@ -190,23 +201,23 @@ def admin_home(request: HttpRequest) -> HttpResponse | HttpResponseRedirect:
         performance_geral = 95.0  # Simulado
         uptime_sistema = 99.5  # Simulado
 
-        # Dados para gráficos (específicos da empresa)
-        alertas_por_severidade = {
-            "critical": SystemAlert.objects.filter(
+        # Dados para gráficos (notificações por prioridade da empresa)
+        notificacoes_por_prioridade = {
+            "critica": Notification.objects.filter(
                 tenant=tenant,
-                severity="critical",
+                prioridade="critica",
             ).count(),
-            "high": SystemAlert.objects.filter(
+            "alta": Notification.objects.filter(
                 tenant=tenant,
-                severity="high",
+                prioridade="alta",
             ).count(),
-            "medium": SystemAlert.objects.filter(
+            "media": Notification.objects.filter(
                 tenant=tenant,
-                severity="medium",
+                prioridade="media",
             ).count(),
-            "low": SystemAlert.objects.filter(
+            "baixa": Notification.objects.filter(
                 tenant=tenant,
-                severity="low",
+                prioridade="baixa",
             ).count(),
         }
 
@@ -214,11 +225,13 @@ def admin_home(request: HttpRequest) -> HttpResponse | HttpResponseRedirect:
             "empresas_ativas": empresas_ativas,
             "usuarios_sistema": usuarios_sistema,
             "usuarios_ativos": usuarios_ativos,
-            "alertas_criticos": alertas_criticos,
-            "alertas_por_severidade": alertas_por_severidade,
+            "usuarios_empresa": usuarios_sistema,  # Total de usuários vinculados ao tenant
+            "notificacoes_criticas": notificacoes_criticas,
+            "notificacoes_por_prioridade": notificacoes_por_prioridade,
             "performance_geral": performance_geral,
             "uptime_sistema": uptime_sistema,
             "can_manage_system": False,
+            "modulos_contratados": modulos_contratados,
         }
 
     # Contexto comum
@@ -227,16 +240,16 @@ def admin_home(request: HttpRequest) -> HttpResponse | HttpResponseRedirect:
         "subtitulo": _("Painel de controle e monitoramento"),
         "tenant": tenant,
         "total_empresas": total_empresas,
-        "alertas_pendentes": alertas_pendentes,
-        "alertas_resolvidos_hoje": alertas_resolvidos_hoje,
+        "notificacoes_pendentes": notificacoes_nao_lidas,
+        "notificacoes_lidas_hoje": notificacoes_lidas_hoje,
         "atividades_recentes": atividades_recentes,
         "is_superuser": request.user.is_superuser,
         # Dados para widgets modernos
         "widgets_data": {
-            "alertas_resumo": {
-                "total": alertas_pendentes,
-                "criticos": alertas_criticos,
-                "resolvidos_hoje": alertas_resolvidos_hoje,
+            "notificacoes_resumo": {
+                "total": notificacoes_nao_lidas,
+                "criticas": notificacoes_criticas,
+                "lidas_hoje": notificacoes_lidas_hoje,
             },
             "sistema_performance": {
                 "geral": performance_geral,
@@ -264,62 +277,62 @@ def admin_home(request: HttpRequest) -> HttpResponse | HttpResponseRedirect:
 
 @login_required
 def alerts_page(request: HttpRequest) -> HttpResponse:
-    """View moderna para listar alertas com filtros avançados.
+    """View moderna para listar notificações com filtros avançados.
 
     Args:
         request: O objeto HttpRequest.
 
     Returns:
-        Uma HttpResponse renderizando a lista de alertas.
+        Uma HttpResponse renderizando a lista de notificações.
 
     """
     template_name = "admin/alerts_list.html"
 
     # Filtros
-    severity_filter = request.GET.get("severity", "")
+    prioridade_filter = request.GET.get("prioridade", "")
     tenant_filter = request.GET.get("tenant", "")
     status_filter = request.GET.get("status", "")
     date_from = request.GET.get("date_from", "")
     date_to = request.GET.get("date_to", "")
 
-    # Query base
-    alerts = SystemAlert.objects.select_related(
+    # Query base - Notificações do sistema
+    notifications = Notification.objects.select_related(
         "tenant",
-        "assigned_to",
+        "usuario_destinatario",
     ).order_by("-created_at")
 
     # Aplicar filtros
-    if severity_filter:
-        alerts = alerts.filter(severity=severity_filter)
+    if prioridade_filter:
+        notifications = notifications.filter(prioridade=prioridade_filter)
     if tenant_filter:
-        alerts = alerts.filter(tenant_id=tenant_filter)
+        notifications = notifications.filter(tenant_id=tenant_filter)
     if status_filter:
-        alerts = alerts.filter(status=status_filter)
+        notifications = notifications.filter(status=status_filter)
     if date_from:
-        alerts = alerts.filter(created_at__date__gte=date_from)
+        notifications = notifications.filter(created_at__date__gte=date_from)
     if date_to:
-        alerts = alerts.filter(created_at__date__lte=date_to)
+        notifications = notifications.filter(created_at__date__lte=date_to)
 
     # Se não for superuser, filtrar por tenants acessíveis
     if not request.user.is_superuser:
         tenant = get_current_tenant(request)
-        alerts = alerts.filter(tenant=tenant) if tenant else alerts.none()
+        notifications = notifications.filter(tenant=tenant) if tenant else notifications.none()
 
     # Paginação
-    paginator = Paginator(alerts, 25)
+    paginator = Paginator(notifications, 25)
     page_number = request.GET.get("page")
     page_obj = paginator.get_page(page_number)
 
     context = {
-        "alerts": page_obj,
+        "notifications": page_obj,
         "tenants": Tenant.objects.filter(status="active").order_by("name"),
-        "severity_filter": severity_filter,
+        "prioridade_filter": prioridade_filter,
         "tenant_filter": tenant_filter,
         "status_filter": status_filter,
         "date_from": date_from,
         "date_to": date_to,
-        "total_alerts": paginator.count,
-        "page_title": "Alertas do Sistema",
+        "total_notifications": paginator.count,
+        "page_title": "Notificações do Sistema",
         "page_subtitle": "Monitore e gerencie alertas de segurança e performance",
     }
 
@@ -327,115 +340,47 @@ def alerts_page(request: HttpRequest) -> HttpResponse:
 
 
 @login_required
-def configurations_page(request: HttpRequest) -> HttpResponse:
-    """View moderna para configurações do sistema.
+def configurations_page(request: HttpRequest) -> HttpResponse | HttpResponseRedirect:
+    """View para configurações da empresa (tenant).
 
     Args:
         request: O objeto HttpRequest.
 
     Returns:
-        Uma HttpResponse renderizando a página de configurações.
+        Uma HttpResponse renderizando a página de configurações ou redirecionamento.
 
     """
-    template_name = "admin/configurations_list.html"
+    template_name = "admin/tenant_configurations.html"
+    tenant = get_current_tenant(request)
 
-    # Filtros
-    category_filter = request.GET.get("category", "")
-    search_query = request.GET.get("search", "")
+    if not tenant:
+        messages.error(request, _("Selecione uma empresa para ver as configurações."))
+        return redirect(reverse("core:tenant_select"))
 
-    # Query base
-    configs = SystemConfiguration.objects.order_by("category", "key")
+    # Preparar dados do tenant para o template
+    company_type = (
+        tenant.get_tipo_pessoa_display() if hasattr(tenant, "get_tipo_pessoa_display") else tenant.tipo_pessoa
+    )
+    cnpj_cpf = tenant.cnpj or tenant.cpf if hasattr(tenant, "cpf") else None
 
-    # Aplicar filtros
-    if category_filter:
-        configs = configs.filter(category=category_filter)
-    if search_query:
-        configs = configs.filter(
-            Q(key__icontains=search_query) | Q(description__icontains=search_query),
-        )
-
-    # Agrupar por categoria
-    configs_by_category = {category: list(group) for category, group in groupby(configs, key=lambda x: x.category)}
+    tenant_configs = {
+        "company_name": tenant.name,
+        "company_type": company_type,
+        "status": tenant.status,
+        "created_at": tenant.created_at,
+        "cnpj_cpf": cnpj_cpf,
+        "enabled_modules": tenant.enabled_modules if isinstance(tenant.enabled_modules, dict) else {},
+    }
 
     context = {
-        "configurations": configs,
-        "configs_by_category": configs_by_category,
-        "categories": configs.values_list("category", flat=True).distinct(),
-        "category_filter": category_filter,
-        "search_query": search_query,
-        "page_title": "Configurações do Sistema",
-        "page_subtitle": "Gerencie configurações globais do sistema",
+        "tenant_configs": tenant_configs,
+        "current_tenant": tenant,
+        "tenant": tenant,
+        "page_title": "Configurações da Empresa",
+        "page_subtitle": f"Configurações e personalizações de {tenant.name}",
     }
 
     return render(request, template_name, context)
-
-
-class SystemAlertCreateView(
-    LoginRequiredMixin,
-    UserPassesTestMixin,
-    CreateView,
-):
-    """View para criar novos alertas do sistema."""
-
-    model = SystemAlert
-    form_class = SystemAlertForm
-    template_name = "admin/system_alert_form.html"
-    success_url = reverse_lazy("administration:alerts_page")
-
-    def test_func(self) -> bool:
-        """Verifica se o usuário é superuser."""
-        return self.request.user.is_superuser
-
-    def get_context_data(self, **kwargs) -> dict[str, Any]:  # noqa: ANN003
-        """Adiciona dados ao contexto do template."""
-        context = super().get_context_data(**kwargs)
-        context.update(
-            {
-                "page_title": "Novo Alerta do Sistema",
-                "page_subtitle": "Criar um novo alerta para monitoramento",
-                "form_title": "Informações do Alerta",
-            },
-        )
-        return context
-
-    def form_valid(self, form: BaseModelForm) -> HttpResponse:
-        """Executa se o formulário for válido."""
-        messages.success(self.request, "Alerta criado com sucesso!")
-        return super().form_valid(form)
-
-
-class SystemAlertUpdateView(
-    LoginRequiredMixin,
-    UserPassesTestMixin,
-    UpdateView,
-):
-    """View para editar alertas do sistema."""
-
-    model = SystemAlert
-    form_class = SystemAlertForm
-    template_name = "admin/system_alert_form.html"
-    success_url = reverse_lazy("administration:alerts_page")
-
-    def test_func(self) -> bool:
-        """Verifica se o usuário é superuser."""
-        return self.request.user.is_superuser
-
-    def get_context_data(self, **kwargs) -> dict[str, Any]:  # noqa: ANN003
-        """Adiciona dados ao contexto do template."""
-        context = super().get_context_data(**kwargs)
-        context.update(
-            {
-                "page_title": f"Editar Alerta: {self.object.title}",
-                "page_subtitle": "Atualize as informações do alerta",
-                "form_title": "Informações do Alerta",
-            },
-        )
-        return context
-
-    def form_valid(self, form: BaseModelForm) -> HttpResponse:
-        """Executa se o formulário for válido."""
-        messages.success(self.request, "Alerta atualizado com sucesso!")
-        return super().form_valid(form)
 
 
 class SystemConfigurationCreateView(
@@ -504,108 +449,6 @@ class SystemConfigurationUpdateView(
         """Executa se o formulário for válido."""
         messages.success(self.request, "Configuração atualizada com sucesso!")
         return super().form_valid(form)
-
-
-class TenantConfigurationUpdateView(LoginRequiredMixin, UpdateView):
-    """View para editar configurações da empresa."""
-
-    model = TenantConfiguration
-    form_class = TenantConfigurationForm
-    template_name = "admin/tenant_config_form.html"
-    success_url = reverse_lazy("administration:configurations_page")
-
-    def get_object(
-        self,
-        queryset: QuerySet[TenantConfiguration] | None = None,
-    ) -> TenantConfiguration:
-        """Pega ou cria a configuração do tenant atual."""
-        _ = queryset  # Unused argument
-        tenant = get_current_tenant(self.request)
-        if not tenant:
-            msg = "Nenhuma empresa selecionada"
-            raise Http404(msg)
-
-        config, _created = TenantConfiguration.objects.get_or_create(
-            tenant=tenant,
-            defaults={
-                "max_users": 100,
-                "max_storage_mb": 1024,
-                "max_api_requests_per_hour": 1000,
-                "require_2fa": False,
-                "backup_enabled": True,
-                "custom_branding": {},
-            },
-        )
-        return config
-
-    def get_context_data(self, **kwargs) -> dict[str, Any]:  # noqa: ANN003
-        """Adiciona dados ao contexto do template."""
-        context = super().get_context_data(**kwargs)
-        tenant = get_current_tenant(self.request)
-        context.update(
-            {
-                "page_title": f"Configurações - {tenant.name if tenant else ''}",
-                "page_subtitle": "Configure os parâmetros da empresa",
-                "form_title": "Configurações da Empresa",
-                "current_tenant": tenant,
-            },
-        )
-        return context
-
-    def form_valid(self, form: BaseModelForm) -> HttpResponse:
-        """Executa se o formulário for válido."""
-        messages.success(
-            self.request,
-            "Configurações da empresa atualizadas com sucesso!",
-        )
-        return super().form_valid(form)
-
-
-class SystemAlertListView(LoginRequiredMixin, UserPassesTestMixin, ListView):
-    """View para listar alertas do sistema."""
-
-    model = SystemAlert
-    template_name = "admin/system_alerts.html"
-    context_object_name = "alerts"
-    paginate_by = 20
-
-    def test_func(self) -> bool:
-        """Verifica se o usuário é superuser."""
-        return self.request.user.is_superuser
-
-    def get_queryset(self) -> QuerySet[SystemAlert]:
-        """Retorna a queryset de alertas filtrada."""
-        queryset = SystemAlert.objects.all().order_by("-created_at")
-
-        # Filtros
-        status = self.request.GET.get("status")
-        severity = self.request.GET.get("severity")
-        tenant_id = self.request.GET.get("tenant")
-
-        if status:
-            queryset = queryset.filter(status=status)
-        if severity:
-            queryset = queryset.filter(severity=severity)
-        if tenant_id:
-            queryset = queryset.filter(tenant_id=tenant_id)
-
-        return queryset
-
-    def get_context_data(self, **kwargs) -> dict[str, Any]:  # noqa: ANN003
-        """Adiciona dados ao contexto do template."""
-        context = super().get_context_data(**kwargs)
-        context.update(
-            {
-                "page_title": "Alertas do Sistema",
-                "page_subtitle": "Monitoramento e gestão de alertas",
-                "tenants": Tenant.objects.filter(status="active").order_by(
-                    "name",
-                ),
-                "status_choices": SystemAlert.STATUS_CHOICES,
-                "severity_choices": SystemAlert.SEVERITY_CHOICES,
-            },
-        )
-        return context
 
 
 class AdminDashboardView(TemplateView):
@@ -846,7 +689,7 @@ class ManagementDashboardView(TemplateView):
             recent_users = User.objects.filter(
                 last_login__gte=timezone.now() - timedelta(hours=24),
             ).order_by(
-                "-last_login"
+                "-last_login",
             )[:5]
 
             return [
@@ -1014,7 +857,16 @@ class TenantListLiteView(APIView):
 
     permission_classes: ClassVar[list] = [permissions.IsAdminUser]
 
-    def get(self, request: HttpRequest) -> Response:
+    def get(self, request: HttpRequest) -> Response:  # noqa: ARG002
+        """Retorna lista simplificada de tenants ativos.
+
+        Args:
+            request: Objeto HttpRequest (não utilizado, apenas para assinatura da API).
+
+        Returns:
+            Response com lista de tenants (id, name, subdomain).
+
+        """
         qs = Tenant.objects.order_by("name").values("id", "name", "subdomain")[:200]
         return Response(list(qs))
 
@@ -1040,69 +892,31 @@ def modules_page(request: HttpRequest) -> HttpResponse | HttpResponseRedirect:
         messages.error(request, _("Selecione uma empresa para ver os módulos."))
         return redirect(reverse("core:tenant_select"))
 
-    # Módulos disponíveis no sistema (simulado)
-    available_modules: list[ModuleInfo] = [
-        {
-            "id": "obras",
-            "name": "Gestão de Obras",
-            "description": "Controle completo de obras e projetos",
-            "icon": "fas fa-building",
-            "category": "Operacional",
-            "price": 149.90,
-            "active": True,
-            "usage": 85.2,
-        },
-        {
-            "id": "financeiro",
-            "name": "Financeiro",
-            "description": "Contas a pagar, receber e fluxo de caixa",
-            "icon": "fas fa-dollar-sign",
-            "category": "Financeiro",
-            "price": 99.90,
-            "active": True,
-            "usage": 92.5,
-        },
-        {
-            "id": "estoque",
-            "name": "Controle de Estoque",
-            "description": "Gestão de materiais e produtos",
-            "icon": "fas fa-boxes",
-            "category": "Operacional",
-            "price": 79.90,
-            "active": True,
-            "usage": 67.8,
-        },
-        {
-            "id": "rh",
-            "name": "Recursos Humanos",
-            "description": "Gestão de funcionários e folha de pagamento",
-            "icon": "fas fa-users",
-            "category": "Administrativo",
-            "price": 129.90,
-            "active": False,
-            "usage": 0,
-        },
-        {
-            "id": "bi",
-            "name": "Business Intelligence",
-            "description": "Relatórios avançados e análises",
-            "icon": "fas fa-chart-bar",
-            "category": "Análise",
-            "price": 199.90,
-            "active": False,
-            "usage": 0,
-        },
-        {
-            "id": "crm",
-            "name": "CRM",
-            "description": "Gestão de relacionamento com clientes",
-            "icon": "fas fa-handshake",
-            "category": "Comercial",
-            "price": 89.90,
-            "active": True,
-            "usage": 74.3,
-        },
-    ]
+    # Obter módulos habilitados do tenant
+    enabled_modules_list = []
+    if isinstance(tenant.enabled_modules, dict):
+        enabled_modules_list = tenant.enabled_modules.get("modules", [])
+    elif isinstance(tenant.enabled_modules, list):
+        enabled_modules_list = tenant.enabled_modules
+
+    # Construir lista de módulos com dados reais
+    available_modules: list[ModuleInfo] = []
+    for module_key in enabled_modules_list:
+        module_meta = MODULE_DEFINITIONS.get(module_key, {})
+        module_visual = MODULE_VISUAL.get(module_key, {})
+
+        available_modules.append(
+            {
+                "id": module_key,
+                "name": module_meta.get("name", module_key.capitalize()),
+                "description": module_meta.get("description", "Módulo do sistema"),
+                "icon": module_visual.get("icon", "fas fa-puzzle-piece"),
+                "category": module_meta.get("category", "Geral"),
+                "price": 0.0,  # Pode ser expandido futuramente com preços por módulo
+                "active": True,
+                "usage": 0,  # Pode ser expandido futuramente com métricas de uso
+            },
+        )
 
     # Estatísticas dos módulos
     active_modules = [m for m in available_modules if m["active"]]

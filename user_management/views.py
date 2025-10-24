@@ -954,9 +954,6 @@ class TwoFASetupView(LoginRequiredMixin, View):
         )
 
 
-## Classe removida (duplicada) TwoFAAdminForceRegenerateView - mantida a versão mais completa abaixo
-
-
 class TwoFAMetricsDashboardView(LoginRequiredMixin, View):
     """Exibe um dashboard HTML com métricas agregadas do uso de 2FA."""
 

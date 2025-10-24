@@ -7,7 +7,6 @@ cargos e configurações.
 
 # core/views.py
 import contextlib
-import json
 import logging
 import time
 from typing import Any, cast
@@ -49,7 +48,6 @@ from .forms import (
     CustomUserForm,
     DepartmentForm,
     EmpresaDocumentoVersaoCreateForm,
-    ModuleConfigurationForm,
     RoleForm,
     TenantUserForm,
 )
@@ -70,6 +68,23 @@ from .models import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+@login_required
+def tenant_module_config_redirect(request: HttpRequest, pk: int) -> HttpResponse:
+    """Redireciona para o Wizard Step 5 (configuração de módulos) em modo direto.
+
+    Persiste flag na sessão indicando que deve abrir APENAS o step 5,
+    sem navegação completa do wizard.
+    """
+    # Persistir contexto de edição na sessão para consistência com o Wizard
+    try:
+        request.session["tenant_wizard_editing_pk"] = pk
+        request.session["wizard_direct_to_step_5"] = True  # Flag para modo direto
+        request.session.modified = True
+    except (RuntimeError, KeyError, AttributeError) as exc:
+        logger.debug("Falha ao persistir tenant_wizard_editing_pk na sessão: %s", exc)
+    return redirect("core:wizard_goto_step_edit", pk=pk, step=5)
 
 
 # ============================================================================
@@ -731,40 +746,11 @@ class TenantDeleteView(
         return redirect(success_url)
 
 
-@login_required
-@user_passes_test(lambda u: u.is_superuser)
-def tenant_module_config(request: HttpRequest, pk: int) -> HttpResponse:
-    """Configura os módulos ativos para um Tenant específico."""
-    tenant = get_object_or_404(Tenant, pk=pk)
-    if request.method == "POST":
-        form = ModuleConfigurationForm(request.POST, tenant=tenant)
-        if form.is_valid():
-            form.save()
-            messages.success(
-                request,
-                f"Configuração de módulos atualizada para '{tenant.name}'.",
-            )
-            return redirect("core:tenant_detail", pk=tenant.pk)
-        messages.error(request, _("Por favor, corrija os erros no formulário."))
-    else:
-        initial_modules = []
-        if isinstance(tenant.enabled_modules, str):
-            with contextlib.suppress(json.JSONDecodeError):
-                initial_modules = json.loads(tenant.enabled_modules)
-        elif isinstance(tenant.enabled_modules, dict):
-            initial_modules = tenant.enabled_modules.get("modules", [])
+"""
+Removido endpoint de configuração de módulos fora do Wizard.
 
-        form = ModuleConfigurationForm(
-            initial={"enabled_modules": initial_modules},
-            tenant=tenant,
-        )
-
-    context = {
-        "page_title": f"Configurar Módulos - {tenant.name}",
-        "tenant": tenant,
-        "form": form,
-    }
-    return render(request, "core/tenant_module_config.html", context)
+A criação/edição de módulos do Tenant deve ocorrer exclusivamente via wizard.
+"""
 
 
 class CustomUserListView(LoginRequiredMixin, SuperuserRequiredMixin, ListView):

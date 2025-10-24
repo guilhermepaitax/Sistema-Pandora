@@ -8,15 +8,11 @@ from .views import (
     AdminActivityViewSet,
     # API ViewSets
     DashboardStatsViewSet,
-    # Views baseadas em classe para formulários
-    SystemAlertCreateView,
-    SystemAlertUpdateView,
     SystemAlertViewSet,
     SystemConfigurationCreateView,
     SystemConfigurationUpdateView,
     SystemConfigurationViewSet,
     TenantBackupViewSet,
-    TenantConfigurationUpdateView,
     TenantConfigurationViewSet,
     TenantListLiteView,
     TenantUsageReportViewSet,
@@ -55,13 +51,9 @@ urlpatterns = [
     path("reports/", reports_page, name="reports_page"),
     path("billing/", billing_page, name="billing_page"),
     path("support/", support_page, name="support_page"),
-    # Formulários de alertas
-    path("alerts/create/", SystemAlertCreateView.as_view(), name="alert_create"),
-    path("alerts/<int:pk>/edit/", SystemAlertUpdateView.as_view(), name="alert_update"),
-    # Formulários de configurações
+    # Formulários de configurações do sistema (apenas superusuários)
     path("config/system/create/", SystemConfigurationCreateView.as_view(), name="system_config_create"),
     path("config/system/<int:pk>/edit/", SystemConfigurationUpdateView.as_view(), name="system_config_update"),
-    path("config/tenant/", TenantConfigurationUpdateView.as_view(), name="tenant_config_update"),
     # Rotas da API (prefixadas com /api/)
     path("api/", include(router.urls)),
     # Aliases esperados pelos testes migrados

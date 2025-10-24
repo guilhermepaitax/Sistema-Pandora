@@ -7,11 +7,19 @@ from django.shortcuts import render
 from django.urls import reverse_lazy
 from django.views.generic import CreateView, DeleteView, DetailView, ListView, UpdateView
 
+from core.mixins import ModuleRequiredMixin
+
 from .forms import FiltroIndicadorForm, IndicadorForm
 from .models import Indicador
 
 
-class BiListView(ListView):
+class BiMixin(ModuleRequiredMixin):
+    """Mixin base para views de BI."""
+
+    required_module = "bi"
+
+
+class BiListView(BiMixin, ListView):
     model = Indicador
     template_name = "bi/bi_list_ultra_modern.html"
     context_object_name = "indicadores"
@@ -24,7 +32,7 @@ class BiListView(ListView):
         search = self.request.GET.get("search")
         if search:
             queryset = queryset.filter(
-                Q(nome__icontains=search) | Q(descricao__icontains=search) | Q(observacoes__icontains=search)
+                Q(nome__icontains=search) | Q(descricao__icontains=search) | Q(observacoes__icontains=search),
             )
 
         # Filtro por tipo
@@ -95,12 +103,12 @@ class BiListView(ListView):
                 "tipos_choices": Indicador.TIPO_CHOICES,
                 "periodo_choices": Indicador.PERIODO_CHOICES,
                 "status_choices": Indicador.STATUS_CHOICES,
-            }
+            },
         )
         return context
 
 
-class BiDetailView(DetailView):
+class BiDetailView(BiMixin, DetailView):
     model = Indicador
     template_name = "bi/bi_detail_ultra_modern.html"
     context_object_name = "indicador"
@@ -110,7 +118,7 @@ class BiDetailView(DetailView):
 
         # Indicadores relacionados (mesmo tipo)
         indicadores_relacionados = Indicador.objects.filter(tipo=self.object.tipo, status="ativo").exclude(
-            id=self.object.id
+            id=self.object.id,
         )[:5]
 
         context.update(
@@ -128,12 +136,12 @@ class BiDetailView(DetailView):
                 "delete_url": "bi:bi_delete",
                 "list_url": "bi:bi_dashboard",
                 "indicadores_relacionados": indicadores_relacionados,
-            }
+            },
         )
         return context
 
 
-class BiCreateView(CreateView):
+class BiCreateView(BiMixin, CreateView):
     model = Indicador
     form_class = IndicadorForm
     template_name = "bi/bi_form_ultra_modern.html"
@@ -153,7 +161,7 @@ class BiCreateView(CreateView):
                 "form_title": "Adicionar Indicador",
                 "submit_text": "Salvar Indicador",
                 "cancel_url": "bi:bi_dashboard",
-            }
+            },
         )
         return context
 
@@ -165,7 +173,7 @@ class BiCreateView(CreateView):
         return super().form_valid(form)
 
 
-class BiUpdateView(UpdateView):
+class BiUpdateView(BiMixin, UpdateView):
     model = Indicador
     form_class = IndicadorForm
     template_name = "bi/bi_form_ultra_modern.html"
@@ -186,7 +194,7 @@ class BiUpdateView(UpdateView):
                 "form_title": "Editar Indicador",
                 "submit_text": "Salvar Alterações",
                 "cancel_url": "bi:bi_dashboard",
-            }
+            },
         )
         return context
 
@@ -195,7 +203,7 @@ class BiUpdateView(UpdateView):
         return super().form_valid(form)
 
 
-class BiDeleteView(DeleteView):
+class BiDeleteView(BiMixin, DeleteView):
     model = Indicador
     template_name = "bi/bi_confirm_delete_ultra_modern.html"
     success_url = reverse_lazy("bi:bi_dashboard")
@@ -212,7 +220,7 @@ class BiDeleteView(DeleteView):
                     {"name": self.object.nome, "url": "bi:bi_detail", "url_args": [self.object.pk]},
                     {"name": "Excluir", "url": "", "active": True},
                 ],
-            }
+            },
         )
         return context
 
@@ -224,7 +232,6 @@ class BiDeleteView(DeleteView):
 # Views para Dashboard e Relatórios
 def dashboard_view(request):
     """View principal do dashboard BI"""
-
     # Estatísticas gerais
     total_indicadores = Indicador.objects.count()
     indicadores_ativos = Indicador.objects.filter(status="ativo").count()
@@ -240,7 +247,7 @@ def dashboard_view(request):
 
     # Indicadores críticos (abaixo da meta)
     indicadores_criticos = Indicador.objects.filter(meta__isnull=False, valor__lt=F("meta"), status="ativo").order_by(
-        "-data"
+        "-data",
     )[:5]
 
     context = {
@@ -264,7 +271,6 @@ def dashboard_view(request):
 # API Views para AJAX
 def api_indicador_stats(request):
     """API para estatísticas de indicadores"""
-
     stats = {
         "total_indicadores": Indicador.objects.count(),
         "indicadores_ativos": Indicador.objects.filter(status="ativo").count(),

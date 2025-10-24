@@ -3,9 +3,10 @@
 {% load widget_tweaks %}
 
 {% block step_content %}
+{% with modules_field_name=form.enabled_modules.html_name %}
 <!-- Formulário de Configurações Ultra Moderno -->
 
-<div id="wizard-configuration-section" data-validate-url="{% url 'core:tenant_wizard_validate_field' %}">
+<div id="wizard-configuration-section" data-validate-url="{% url 'core:tenant_wizard_validate_field' %}" data-modules-field-name="{{ modules_field_name }}">
     <!-- Alerta Informativo -->
     <div class="alert alert-success border-0 mb-4 wizard-alert">
         <div class="d-flex align-items-center">
@@ -177,7 +178,7 @@
                                 <input
                                     class="form-check-input"
                                     type="checkbox"
-                                    name="enabled_modules"
+                                    name="{{ modules_field_name }}"
                                     value="{{ m.key }}"
                                     id="module_{{ m.key }}"
                                     {% if m.locked %}checked disabled data-locked="1"{% else %}{% if m.key in form.fields.enabled_modules.initial %}checked{% endif %}{% endif %}
@@ -368,7 +369,7 @@
 // JS leve para contador e seleção em massa sem alterar identidade visual
 (function(){
     function updateCounter(){
-        var total = document.querySelectorAll('#wizard-configuration-section .form-check-input[type="checkbox"][name="enabled_modules"]:checked').length;
+    var total = document.querySelectorAll('#wizard-configuration-section .form-check-input[type="checkbox"][name="{{ modules_field_name }}"]:checked').length;
         var el = document.getElementById('moduleCounter');
         if(el){ el.textContent = total + ' módulos selecionados'; }
     }
@@ -379,13 +380,13 @@
         var btnClear = document.getElementById('btnClearAllModules');
         if(btnAll){
             btnAll.addEventListener('click', function(){
-                document.querySelectorAll('#wizard-configuration-section .form-check-input[type="checkbox"][name="enabled_modules"]:not([disabled])').forEach(function(cb){ cb.checked = true; });
+                document.querySelectorAll('#wizard-configuration-section .form-check-input[type="checkbox"][name="{{ modules_field_name }}"]:not([disabled])').forEach(function(cb){ cb.checked = true; });
                 updateCounter();
             });
         }
         if(btnClear){
             btnClear.addEventListener('click', function(){
-                document.querySelectorAll('#wizard-configuration-section .form-check-input[type="checkbox"][name="enabled_modules"]:not([disabled])').forEach(function(cb){ cb.checked = false; });
+                document.querySelectorAll('#wizard-configuration-section .form-check-input[type="checkbox"][name="{{ modules_field_name }}"]:not([disabled])').forEach(function(cb){ cb.checked = false; });
                 updateCounter();
             });
         }
@@ -395,7 +396,7 @@
                 var target = this.getAttribute('data-category-target');
                 if(!target) return;
                 document.querySelectorAll('#wizard-configuration-section [data-category-item="'+target+'"]').forEach(function(card){
-                    card.querySelectorAll('input.form-check-input[type="checkbox"][name="enabled_modules"]:not([disabled])').forEach(function(cb){
+                    card.querySelectorAll('input.form-check-input[type="checkbox"][name="{{ modules_field_name }}"]:not([disabled])').forEach(function(cb){
                         cb.checked = master.checked;
                     });
                 });
@@ -403,10 +404,11 @@
             });
         });
         // Atualizar contador em qualquer alteração
-        document.querySelectorAll('#wizard-configuration-section input.form-check-input[type="checkbox"][name="enabled_modules"]').forEach(function(cb){
+        document.querySelectorAll('#wizard-configuration-section input.form-check-input[type="checkbox"][name="{{ modules_field_name }}"]').forEach(function(cb){
             cb.addEventListener('change', updateCounter);
         });
     });
 })();
 </script>
+{% endwith %}
 {% endblock %}

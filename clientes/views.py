@@ -30,7 +30,7 @@ from django.urls import reverse, reverse_lazy
 from django.utils.translation import gettext_lazy as _
 from django.views.generic import DeleteView, DetailView, ListView
 
-from core.mixins import TenantRequiredMixin
+from core.mixins import ModuleRequiredMixin, TenantRequiredMixin
 from core.utils import get_current_tenant
 from shared.services.ui_permissions import build_ui_permissions
 
@@ -99,8 +99,10 @@ def clientes_home(request: HttpRequest) -> HttpResponse:
 # ---------------------------------------------------------------------------
 
 
-class ClienteMixin(TenantRequiredMixin):
+class ClienteMixin(TenantRequiredMixin, ModuleRequiredMixin):
     """Mixin base para views de Cliente, garantindo o isolamento por tenant."""
+
+    required_module = "clientes"
 
     def get_queryset(self) -> QuerySet[Cliente]:
         """Filtra o queryset pelo tenant do usuário logado."""
