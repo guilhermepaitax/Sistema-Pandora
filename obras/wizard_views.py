@@ -7,7 +7,7 @@ sem alterar regras de negócio existentes.
 import logging
 from datetime import date, datetime
 from decimal import Decimal
-from typing import Any
+from typing import Any, cast
 
 from django import forms
 from django.contrib import messages
@@ -22,8 +22,9 @@ from core.models import TenantUser
 from core.utils import get_current_tenant
 from core.wizard_forms import TenantAddressWizardForm
 from core.wizard_views import TenantCreationWizardView
+from documentos.services import consolidate_wizard_temp_to_documents
 
-from .models import DocumentoObra, Obra
+from .models import Obra
 from .wizard_forms import (
     ObraConfigurationWizardForm,
     ObraContactsWizardForm,
@@ -478,12 +479,6 @@ class ObraWizardView(TenantCreationWizardView):
         if extra:
             obra.observacoes = (obra.observacoes or "") + "\n" + extra
 
-    def _save_documents(self, obra: Obra) -> None:
-        """Salvar até 10 documentos enviados no passo 4."""
-        files = self.request.FILES.getlist("main-documentos")
-        for f in files[:10]:
-            DocumentoObra.objects.create(obra=obra, descricao=f.name, arquivo=f)
-
     def finish_wizard(self) -> HttpResponse:
         """Consolida dados da sessão em uma instância de Obra e salva."""
         data = self.get_wizard_data() or {}
@@ -503,7 +498,19 @@ class ObraWizardView(TenantCreationWizardView):
                 self._append_contact_summary(obra, step3)
 
                 obra.save()
-                self._save_documents(obra)
+
+                # Consolidar documentos temporários do wizard para a obra
+                tenant = get_current_tenant(self.request)
+                if tenant:
+                    try:
+                        consolidate_wizard_temp_to_documents(
+                            tenant=tenant,
+                            session_key=self.request.session.session_key,
+                            user=cast("Any", self.request.user),
+                        )
+                        logger.info("Documentos do wizard consolidados para a obra %s", obra.pk)
+                    except Exception:  # pragma: no cover
+                        logger.exception("Falha ao consolidar documentos do wizard para a obra %s", obra.pk)
 
                 # Limpar sessão e redirecionar
                 self.clear_wizard_data()
