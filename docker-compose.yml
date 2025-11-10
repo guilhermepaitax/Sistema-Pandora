@@ -1,4 +1,4 @@
-version: '3.9'
+version: "3.9"
 
 services:
   web:
@@ -10,9 +10,11 @@ services:
     volumes:
       - .:/app
     ports:
-      - '8000:8000'
+      - "8000:8000"
     depends_on:
       redis:
+        condition: service_healthy
+      db:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "python", "manage.py", "check"]
@@ -32,6 +34,8 @@ services:
     depends_on:
       redis:
         condition: service_healthy
+      db:
+        condition: service_healthy
     restart: unless-stopped
 
   worker-video:
@@ -44,6 +48,8 @@ services:
       - .:/app
     depends_on:
       redis:
+        condition: service_healthy
+      db:
         condition: service_healthy
     restart: unless-stopped
 
@@ -58,6 +64,8 @@ services:
     depends_on:
       redis:
         condition: service_healthy
+      db:
+        condition: service_healthy
     restart: unless-stopped
 
   redis:
@@ -65,7 +73,7 @@ services:
     container_name: pandora_redis
     command: redis-server --save 20 1 --loglevel warning
     ports:
-      - '6379:6379'
+      - "6379:6379"
     volumes:
       - redis_data:/data
     healthcheck:
@@ -75,5 +83,22 @@ services:
       retries: 5
     restart: unless-stopped
 
+  db:
+    image: postgres:16-alpine
+    container_name: pandora_db
+    environment:
+      - POSTGRES_DB=${POSTGRES_DB}
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
 volumes:
   redis_data:
+  postgres_data:
