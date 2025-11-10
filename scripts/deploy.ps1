@@ -5,7 +5,9 @@ param(
   [string]$ProjectDir = "/opt/pandora",
   [string]$Service = "web",
   [string]$RepoUrl = "",
-  [switch]$Maintenance
+  [switch]$Maintenance,
+  [switch]$LocalSync,
+  [string]$SourceDir
 )
 
 # Fail fast in PowerShell
@@ -57,6 +59,8 @@ function Invoke-RemoteScript {
 
 # Pré-checagens
 Test-ToolExists -Tool "ssh"
+if ($LocalSync.IsPresent) { Test-ToolExists -Tool "tar" }
+if ($LocalSync.IsPresent) { Test-ToolExists -Tool "ssh" }
 
 # Exibe parâmetros efetivos
 Write-Host "Host:       $SshTarget" -ForegroundColor Yellow
@@ -65,13 +69,29 @@ Write-Host "Branch:     $Branch" -ForegroundColor Yellow
 Write-Host "Projeto:    $ProjectDir" -ForegroundColor Yellow
 Write-Host "Serviço:    $Service" -ForegroundColor Yellow
 Write-Host "Manutenção: $($Maintenance.IsPresent)" -ForegroundColor Yellow
+$syncDisplay = if ($LocalSync.IsPresent) { 'LocalSync' } else { 'Git pull' }
+Write-Host "Fonte:      $syncDisplay" -ForegroundColor Yellow
 $repoDisplay = if ([string]::IsNullOrWhiteSpace($RepoUrl)) { 'N/A' } else { $RepoUrl }
 Write-Host "Repo URL:   $repoDisplay" -ForegroundColor Yellow
 
 # Valida conexão SSH e aceita host key (se primeira vez)
 Test-SSHReachable -Target $SshTarget -Port $Port
 
-# Monta script remoto (Bash) com placeholders substituídos
+# Se solicitado, sincroniza conteúdo local via tar stream para o servidor (inclui dotfiles)
+if ($LocalSync.IsPresent) {
+  $src = if ([string]::IsNullOrWhiteSpace($SourceDir)) { (Get-Location).Path } else { (Resolve-Path $SourceDir).Path }
+  Write-Host "[local] Sincronizando conteúdo local de $src para $ProjectDir (remoto)" -ForegroundColor Cyan
+  $mkdirCmd = @("-p", $Port, "-o", "ConnectTimeout=10", "-o", "StrictHostKeyChecking=accept-new", $SshTarget, "mkdir -p `"$ProjectDir`"")
+  & ssh @mkdirCmd | Out-Host
+  if ($LASTEXITCODE -ne 0) { throw "Falha ao criar diretório remoto $ProjectDir" }
+  # tar -> ssh -> tar (preserva estrutura e inclui arquivos ocultos)
+  $tarCmd = "tar -C `"$src`" -czf - . | ssh -p $Port -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new $SshTarget 'tar -xzf - -C `"$ProjectDir`"'"
+  Write-Host $tarCmd -ForegroundColor DarkGray
+  cmd.exe /c $tarCmd | Out-Host
+  if ($LASTEXITCODE -ne 0) { throw "Falha ao sincronizar arquivos locais para o servidor" }
+}
+
+# Monta script remoto (Bash) com placeholders substituídos para preparar .env, atualizar código (se RepoUrl) e subir containers
 $remoteScript = @'
 #!/usr/bin/env bash
 # Modo seguro com fallback: ativa -e e -u sempre; ativa pipefail apenas se suportado.
@@ -125,25 +145,27 @@ if ! grep -q '^DATABASE_URL=' .env 2>/dev/null; then
   ensure_kv DATABASE_URL "postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}"
 fi
 
-log "Atualizando código (branch=${BRANCH})"
-if git rev-parse --git-dir >/dev/null 2>&1; then
-  git fetch --all --prune || true
-  if git rev-parse --verify "${BRANCH}" >/dev/null 2>&1; then
-    git checkout "${BRANCH}" || true
-  fi
-  git pull --ff-only origin "${BRANCH}" || true
-else
-  if command -v git >/dev/null 2>&1 && [ -n "${REPO_URL}" ]; then
-    if [ -z "$(ls -A . 2>/dev/null)" ]; then
-      log "Clonando repositório (${REPO_URL}) em ${PROJECT_DIR}"
-      git clone "${REPO_URL}" . || { log "Falha ao clonar. Prosseguindo sem atualizar código."; }
-      git checkout "${BRANCH}" >/dev/null 2>&1 || true
-    else
-      log "Diretório não-vazio e sem Git; prosseguindo sem atualizar código."
+if [ -n "${REPO_URL}" ]; then
+  log "Atualizando código via Git (branch=${BRANCH})"
+  if git rev-parse --git-dir >/dev/null 2>&1; then
+    git fetch --all --prune || true
+    if git rev-parse --verify "${BRANCH}" >/dev/null 2>&1; then
+      git checkout "${BRANCH}" || true
     fi
+    git pull --ff-only origin "${BRANCH}" || true
   else
-    log "${PROJECT_DIR} não é um repositório Git e REPO_URL não informado. Prosseguindo sem atualização de código."
+    if command -v git >/dev/null 2>&1; then
+      if [ -z "$(ls -A . 2>/dev/null)" ]; then
+        log "Clonando repositório (${REPO_URL}) em ${PROJECT_DIR}"
+        git clone "${REPO_URL}" . || { log "Falha ao clonar. Prosseguindo sem atualizar código."; }
+        git checkout "${BRANCH}" >/dev/null 2>&1 || true
+      else
+        log "Diretório não-vazio e sem Git; prosseguindo sem atualizar código."
+      fi
+    fi
   fi
+else
+  log "LocalSync: mantendo arquivos enviados (sem Git pull)."
 fi
 
 # Detecta arquivo compose
@@ -177,10 +199,10 @@ log "Subindo nova versão (up -d)"
 docker compose $COMPOSE_ARGS up -d --remove-orphans
 
 log "Aplicando migrações"
-docker compose $COMPOSE_ARGS exec -T "${SERVICE}" python manage.py migrate --noinput
+docker compose $COMPOSE_ARGS run --rm "${SERVICE}" python manage.py migrate --noinput
 
 log "Coletando estáticos"
-docker compose $COMPOSE_ARGS exec -T "${SERVICE}" python manage.py collectstatic --noinput
+docker compose $COMPOSE_ARGS run --rm "${SERVICE}" python manage.py collectstatic --noinput
 
 log "Limpando imagens e objetos antigos (docker system prune -f)"
 docker system prune -f >/dev/null 2>&1 || true
